@@ -158,8 +158,9 @@ def analyze_article(title, body_text, lang):
     2. **Relevance Check**: TRUE if it's significant news (Product launch, Partnership, Market trend, Policy). FALSE if it's just raw stock data, simple earnings table, or irrelevant.
     3. **Categorize Region**: [Africa, North America, India, China, Japan, Southeast Asia, Europe, Global].
     4. **Categorize Segment**: [Utility, Forklift, Agriculture, Construction, Mining].
-    5. **3-Line Summary**: Summarize the key points in Japanese in exactly 3 bullet points.
-    6. **Full Translation**: If the Original Language is NOT Japanese, provide a comprehensive natural Japanese translation of the Body Text. If it IS Japanese, just return "Original is Japanese".
+    5. **Categorize Brand**: List relevant manufacturers mentioned [Komatsu, Caterpillar, Hitachi, Volvo, Liebherr, John Deere, Sany, XCMG, Zoomlion, Kobelco, Sumitomo, etc.].
+    6. **3-Line Summary**: Summarize the key points in Japanese in exactly 3 bullet points.
+    7. **Full Translation**: If the Original Language is NOT Japanese, provide a comprehensive natural Japanese translation of the Body Text. If it IS Japanese, just return "Original is Japanese".
     
     Response Format (JSON Only):
     {{
@@ -167,6 +168,7 @@ def analyze_article(title, body_text, lang):
         "is_relevant_news": true/false,
         "region": "...",
         "segment": "...",
+        "brand": "...",
         "summary": "...", 
         "full_translation": "..." 
     }}
@@ -317,7 +319,8 @@ def save_to_notion(source_name, article_data, ai_data, resolved_url, original_te
         "Source Name": {"select": {"name": source_name}},
         published_date_prop: {"date": {"start": iso_date}},
         "Region": {"multi_select": clean_multi_select(ai_data["region"])},
-        "Segment": {"multi_select": clean_multi_select(ai_data["segment"])}
+        "Segment": {"multi_select": clean_multi_select(ai_data["segment"])},
+        "Brand": {"multi_select": clean_multi_select(ai_data.get("brand", ""))}
     }
     
     try:
