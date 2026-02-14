@@ -1,0 +1,7 @@
+requests
+feedparser
+google-generativeai
+notion-client
+beautifulsoup4
+selenium
+webdriver-manager
