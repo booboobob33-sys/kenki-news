@@ -61,6 +61,11 @@ RSS_FEEDS = [
     
     # --- Specialized Japan Media ---
     {"name": "Kensetsu News", "lang": "ja", "url": "https://news.google.com/rss/search?q=%E5%BB%BA%E8%A8%AD%E9%80%9A%E4%BF%A1%E6%96%B0%E8%81%9E&hl=ja&gl=JP&ceid=JP:ja"},
+    {"name": "Nikkei (Construction Machinery)", "lang": "ja", "url": "https://news.google.com/rss/search?q=site:nikkei.com+%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
+    {"name": "Nikkan Kogyo (Construction Machinery)", "lang": "ja", "url": "https://news.google.com/rss/search?q=site:nikkan.co.jp+%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
+    
+    # --- General Industry Search (Safety Net) ---
+    {"name": "Google News (Construction Machinery)", "lang": "ja", "url": "https://news.google.com/rss/search?q=%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
 ]
 
 def safe_print(text):
