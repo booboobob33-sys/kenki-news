@@ -38,13 +38,28 @@ notion = Client(auth=NOTION_TOKEN)
 # News Sources
 # Mixing Global (EN) and Japan (JP) sources
 RSS_FEEDS = [
-    # --- Global (English) ---
-    {"name": "Komatsu (Global)", "lang": "en", "url": "https://news.google.com/rss/search?q=Komatsu+Ltd+construction+mining&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Caterpillar (Global)", "lang": "en", "url": "https://news.google.com/rss/search?q=Caterpillar+Inc+construction+mining&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Hitachi (Global)", "lang": "en", "url": "https://news.google.com/rss/search?q=Hitachi+Construction+Machinery&hl=en-US&gl=US&ceid=US:en"},
-    # --- Japan (Japanese) ---
-    {"name": "Komatsu (Japan)", "lang": "ja", "url": "https://news.google.com/rss/search?q=%E3%82%B3%E3%83%9E%E3%83%84+%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
-    {"name": "Hitachi (Japan)", "lang": "ja", "url": "https://news.google.com/rss/search?q=%E6%97%A5%E7%AB%8B%E5%BB%BA%E6%A9%9F&hl=ja&gl=JP&ceid=JP:ja"},
+    # --- Specialized Industry Media (Deep Professional Info) ---
+    {"name": "International Construction (KHL)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:khl.com+International+Construction&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Mining.com", "lang": "en", "url": "https://www.mining.com/feed/"},
+    {"name": "Construction Equipment Guide", "lang": "en", "url": "https://www.constructionequipmentguide.com/rss/news"},
+    
+    # --- Corporate Newsrooms (Global 14 Companies) ---
+    {"name": "Caterpillar (USA)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:caterpillar.com/en/news&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Komatsu (Global)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:komatsu.jp/en/newsroom+OR+site:komatsu.com/en/newsroom&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "John Deere (USA)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:deere.com/en/news&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Volvo CE (Sweden)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:volvoce.com/global/en/news-and-events/news&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Hitachi CM (Japan)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:hitachicm.com/global/en/news-and-media&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Liebherr (Germany)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:liebherr.com/en/int/about-liebherr/news-and-press-releases&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Sany (China)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:sanyglobal.com/news&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "XCMG (China)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:xcmgglobal.com/news&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Zoomlion (China)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:zoomlion.com/news&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Kobelco (Japan)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:kobelcocm-global.com/news&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Sumitomo CM (Japan)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:sumitomokenki.com/news&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Doosan Bobcat (Korea)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:bobcat.com/na/en/news-and-media+OR+site:doosanbobcat.com/en/media&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Kubota (Japan)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:kubota.com/news&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "JCB (UK)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:jcb.com/en-gb/about/news&hl=en-US&gl=US&ceid=US:en"},
+    
+    # --- Specialized Japan Media ---
     {"name": "Kensetsu News", "lang": "ja", "url": "https://news.google.com/rss/search?q=%E5%BB%BA%E8%A8%AD%E9%80%9A%E4%BF%A1%E6%96%B0%E8%81%9E&hl=ja&gl=JP&ceid=JP:ja"},
 ]
 
@@ -348,7 +363,7 @@ def main():
     except:
         pass
 
-    target_counts = {"ja": 1, "en": 1}
+    target_counts = {"ja": 5, "en": 15}
     saved_counts = {"ja": 0, "en": 0}
     
     # Pre-fetch existing URLs
