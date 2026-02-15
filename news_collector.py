@@ -130,11 +130,12 @@ def resolve_and_extract_content(url):
         # Extract text from p tags
         try:
             paragraphs = driver.find_elements(By.TAG_NAME, "p")
-            text_content = "\n".join([p.text for p in paragraphs if len(p.text) > 20])
+            full_text = "\n".join([p.text for p in paragraphs if len(p.text) > 20])
             
-            # Limit extracted text to ~500 chars to avoid token limits during test
-            if len(text_content) > 500:
-                text_content = text_content[:500] + "..."
+            # Smart cleaning for Notion blocks
+            text_content = full_text
+            
+            safe_print(f"Extracted {len(text_content)} characters.")
         except Exception as e:
             text_content = "Failed to extract content (Element not found)."
             
@@ -165,13 +166,17 @@ def analyze_article(title, body_text, lang):
     - Full Translation (if extraction successful)
     """
     
+    # Truncate body text for AI prompt to stay within token limits
+    # (Still capturing significant context)
+    truncated_body = body_text[:3000] + "..." if len(body_text) > 3000 else body_text
+    
     prompt = f"""
     You are an expert analyst. Process this news article.
     
     Title: {title}
     Original Language: {lang}
     Body Text (Excerpt): 
-    {body_text}
+    {truncated_body}
     
     Tasks:
     1. **Translate Title**: Natural Japanese title.
