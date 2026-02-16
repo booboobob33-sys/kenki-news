@@ -149,10 +149,9 @@ def resolve_and_extract_content(url):
     return resolved_url, text_content
 
 def analyze_article(title, body_text, lang):
-    """
-    Analyze article using Gemini.
-    """
-    truncated_body = body_text[:5000] + "..." if len(body_text) > 5000 else body_text
+    """Geminiを使用して記事を分析する。API制限対策のため入力テキストを2000文字に制限。"""
+    # 3. AIへの送信データの最適化 (トークン節約と安定化)
+    truncated_body = body_text[:2000] + "..." if len(body_text) > 2000 else body_text
     
     prompt = f"""
     You are an expert industry analyst in the construction machinery sector.
@@ -194,6 +193,9 @@ def analyze_article(title, body_text, lang):
         text = text.strip()
         return json.loads(text)
     except Exception as e:
+        if "429" in str(e) or "Quota Exceeded" in str(e) or "ResourceExhausted" in str(e):
+            safe_print("CRITICAL: Gemini API Rate Limit (429) hit.")
+            raise e
         safe_print(f"AI Analysis failed: {e}")
         return None
 
@@ -236,48 +238,29 @@ def get_existing_urls():
     return existing_urls
 
 def save_to_notion(source_name, article_data, ai_data, resolved_url, original_text):
+    """Notionにページを保存する。既存の不備修正（Database ID, Brand処理）を維持。"""
     safe_print(f"Saving to Notion: {ai_data['translated_title']}")
     
     try:
-        # Better date handling
         if hasattr(article_data, 'published_parsed') and article_data.published_parsed:
             dt = datetime.fromtimestamp(time.mktime(article_data.published_parsed))
         else:
             dt = datetime.now()
         iso_date = dt.isoformat()
     except Exception as e:
-        safe_print(f"Date parsing error: {e}")
         iso_date = datetime.now().isoformat()
 
     published_date_prop = get_published_date_property_name()
 
-    # Summary preparation
     summary_data = ai_data.get("summary", "")
-    if isinstance(summary_data, list):
-        summary_text = "\n".join(summary_data)
-    else:
-        summary_text = str(summary_data)
+    summary_text = "\n".join(summary_data) if isinstance(summary_data, list) else str(summary_data)
 
-    # Content Blocks (Children)
     children = [
-        {
-            "object": "block",
-            "type": "heading_2",
-            "heading_2": {
-                "rich_text": [{"type": "text", "text": {"content": "要約"}}]
-            }
-        },
-        {
-            "object": "block",
-            "type": "callout",
-            "callout": {
-                "rich_text": [{"type": "text", "text": {"content": summary_text}}],
-                "icon": {"emoji": "💡"}
-            }
-        }
+        {"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "要約"}}]}},
+        {"object": "block", "type": "callout", "callout": {"rich_text": [{"type": "text", "text": {"content": summary_text}}], "icon": {"emoji": "💡"}}}
     ]
     
-    # Add Translation
+    # Translation
     translation = ai_data.get("full_translation", "")
     if translation and "Original is Japanese" not in translation:
         children.append({
@@ -297,24 +280,20 @@ def save_to_notion(source_name, article_data, ai_data, resolved_url, original_te
                 }
             })
 
-    # Add Original Text (Full Text Saving)
-    children.append({
-        "object": "block",
-        "type": "heading_2",
-        "heading_2": {
-            "rich_text": [{"type": "text", "text": {"content": "原文"}}]
-        }
-    })
+    # 2. 2000文字制限とリンク対応 (Notion本文)
+    children.append({"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "原文"}}]}})
     if original_text:
-        for i in range(0, len(original_text), 2000):
-            chunk = original_text[i:i+2000]
-            children.append({
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": chunk}, "annotations": {"italic": True}}]
-                }
-            })
+        display_text = original_text
+        if len(display_text) > 2000:
+            display_text = display_text[:2000] + f"\n\n...（2000文字制限のため中略。全文は以下のリンクから確認してください）\n{resolved_url}"
+        
+        children.append({
+            "object": "block", 
+            "type": "paragraph", 
+            "paragraph": {
+                "rich_text": [{"type": "text", "text": {"content": display_text}, "annotations": {"italic": True}}]
+            }
+        })
     
     # Clean multi-select helper - Fixed for List or String input
     def clean_multi_select(val):
@@ -364,23 +343,18 @@ def main():
     except:
         pass
 
-    # エコ運転モードの設定
-    MAX_ARTICLES_PER_RUN = 5
-    INTERVAL_SECONDS = 20
+    # 1. ループ処理と待機
+    CHUNK_SIZE = 3
+    LONG_SLEEP_SECONDS = 60
     
     saved_total = 0
     existing_urls = get_existing_urls()
     
-    # フィードを優先順位順にソート
+    # 5. 優先巡回
     sorted_feeds = sorted(RSS_FEEDS, key=lambda x: x.get("priority", 99))
     
     try:
         for feed in sorted_feeds:
-            # 合計保存数が上限に達したら終了
-            if saved_total >= MAX_ARTICLES_PER_RUN:
-                safe_print(f"\nReached max processing limit ({MAX_ARTICLES_PER_RUN}). Finishing...")
-                break
-                
             lang = feed.get("lang", "en")
             safe_print(f"\nChecking source ({feed.get('priority')}): {feed['name']} ({lang})")
             article = fetch_latest_article(feed)
@@ -388,13 +362,13 @@ def main():
             if article:
                 # 重複チェック
                 if article.link in existing_urls:
-                    safe_print(f"Article (RSS Link) already exists: Skip.")
+                    safe_print(f"Article exists: Skip.")
                     continue
                 
                 resolved_url, body_text = resolve_and_extract_content(article.link)
                 
                 if resolved_url in existing_urls:
-                    safe_print(f"Article (Resolved URL) already exists: Skip.")
+                    safe_print(f"Article exists: Skip.")
                     continue
                 
                 if len(body_text) < 100:
@@ -409,10 +383,13 @@ def main():
                             success = save_to_notion(feed['name'], article, ai_result, resolved_url, body_text)
                             if success:
                                 saved_total += 1
-                                # 記事を1件処理するごとにスリープを入れる（エコ運転）
-                                if saved_total < MAX_ARTICLES_PER_RUN:
-                                    safe_print(f"Waiting {INTERVAL_SECONDS} seconds for API quota...")
-                                    time.sleep(INTERVAL_SECONDS)
+                                # 1. 3件処理するごとに1分間スリープ
+                                if saved_total % CHUNK_SIZE == 0:
+                                    safe_print(f"\nSaved {saved_total} items. Sleeping {LONG_SLEEP_SECONDS} seconds for API cooling...")
+                                    time.sleep(LONG_SLEEP_SECONDS)
+                                else:
+                                    # 短い待機
+                                    time.sleep(5)
                         else:
                             safe_print(f"Filtered (Irrelevant): {ai_result.get('translated_title')}")
                     else:
@@ -421,15 +398,15 @@ def main():
                 except Exception as api_error:
                     # 429エラー等の要因で中断が必要な場合
                     if "429" in str(api_error) or "ResourceExhausted" in str(api_error):
-                        safe_print("API Quota limit reached. Stopping process and keeping successful saves.")
-                        break # ループを抜けて正常終了へ
+                        safe_print("API Quota limit reached. Stopping and keeping successful saves.")
+                        break
                     else:
-                        safe_print(f"Unhandled error during processing: {api_error}")
+                        safe_print(f"Unhandled error: {api_error}")
                         continue
             else:
                  safe_print("No feeds found.")
                 
-        safe_print(f"\nCompleted! Total Saved in this run: {saved_total}")
+        safe_print(f"\nCompleted! Total Saved: {saved_total}")
     except Exception as e:
         safe_print(f"Main Loop Error: {e}")
         traceback.print_exc()
