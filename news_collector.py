@@ -29,43 +29,42 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # AI Configuration
 genai.configure(api_key=GEMINI_API_KEY)
-# Using gemini-2.5-flash which had working quota
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-2.0-flash') # Updated to latest stable available for generic tasks if needed
 
 # Notion Client
 notion = Client(auth=NOTION_TOKEN)
 
 # News Sources
-# Mixing Global (EN) and Japan (JP) sources
+# Prioritizing: 1. Specialized Media, 2. Corporate Newsrooms (14 Brands), 3. Japanese Media, 4. General
 RSS_FEEDS = [
-    # --- Specialized Industry Media (Deep Professional Info) ---
-    {"name": "International Construction (KHL)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:khl.com+International+Construction&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Mining.com", "lang": "en", "url": "https://www.mining.com/feed/"},
-    {"name": "Construction Equipment Guide", "lang": "en", "url": "https://www.constructionequipmentguide.com/rss/news"},
+    # --- Priority Specialized Industry Media ---
+    {"priority": 1, "name": "International Construction (KHL)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:khl.com+International+Construction&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 1, "name": "Mining.com", "lang": "en", "url": "https://www.mining.com/feed/"},
+    {"priority": 1, "name": "Construction Equipment Guide", "lang": "en", "url": "https://www.constructionequipmentguide.com/rss/news"},
     
     # --- Corporate Newsrooms (Global 14 Companies) ---
-    {"name": "Caterpillar (USA)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:caterpillar.com/en/news&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Komatsu (Global)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:komatsu.jp/en/newsroom+OR+site:komatsu.com/en/newsroom&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "John Deere (USA)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:deere.com/en/news&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Volvo CE (Sweden)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:volvoce.com/global/en/news-and-events/news&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Hitachi CM (Japan)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:hitachicm.com/global/en/news-and-media&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Liebherr (Germany)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:liebherr.com/en/int/about-liebherr/news-and-press-releases&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Sany (China)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:sanyglobal.com/news&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "XCMG (China)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:xcmgglobal.com/news&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Zoomlion (China)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:zoomlion.com/news&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Kobelco (Japan)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:kobelcocm-global.com/news&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Sumitomo CM (Japan)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:sumitomokenki.com/news&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Doosan Bobcat (Korea)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:bobcat.com/na/en/news-and-media+OR+site:doosanbobcat.com/en/media&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "Kubota (Japan)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:kubota.com/news&hl=en-US&gl=US&ceid=US:en"},
-    {"name": "JCB (UK)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:jcb.com/en-gb/about/news&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "Caterpillar (USA)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:caterpillar.com/en/news&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "Komatsu (Global)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:komatsu.jp/en/newsroom+OR+site:komatsu.com/en/newsroom&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "John Deere (USA)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:deere.com/en/news&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "Volvo CE (Sweden)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:volvoce.com/global/en/news-and-events/news&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "Hitachi CM (Japan)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:hitachicm.com/global/en/news-and-media&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "Liebherr (Germany)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:liebherr.com/en/int/about-liebherr/news-and-press-releases&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "Sany (China)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:sanyglobal.com/news&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "XCMG (China)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:xcmgglobal.com/news&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "Zoomlion (China)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:zoomlion.com/news&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "Kobelco (Japan)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:kobelcocm-global.com/news&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "Sumitomo CM (Japan)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:sumitomokenki.com/news&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "Doosan Bobcat (Korea)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:bobcat.com/na/en/news-and-media+OR+site:doosanbobcat.com/en/media&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "Kubota (Japan)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:kubota.com/news&hl=en-US&gl=US&ceid=US:en"},
+    {"priority": 2, "name": "JCB (UK)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:jcb.com/en-gb/about/news&hl=en-US&gl=US&ceid=US:en"},
     
     # --- Specialized Japan Media ---
-    {"name": "Kensetsu News", "lang": "ja", "url": "https://news.google.com/rss/search?q=%E5%BB%BA%E8%A8%AD%E9%80%9A%E4%BF%A1%E6%96%B0%E8%81%9E&hl=ja&gl=JP&ceid=JP:ja"},
-    {"name": "Nikkei (Construction Machinery)", "lang": "ja", "url": "https://news.google.com/rss/search?q=site:nikkei.com+%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
-    {"name": "Nikkan Kogyo (Construction Machinery)", "lang": "ja", "url": "https://news.google.com/rss/search?q=site:nikkan.co.jp+%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
+    {"priority": 3, "name": "Kensetsu News", "lang": "ja", "url": "https://news.google.com/rss/search?q=%E5%BB%BA%E8%A8%AD%E9%80%9A%E4%BF%A1%E6%96%B0%E8%81%9E&hl=ja&gl=JP&ceid=JP:ja"},
+    {"priority": 3, "name": "Nikkei (Construction Machinery)", "lang": "ja", "url": "https://news.google.com/rss/search?q=site:nikkei.com+%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
+    {"priority": 3, "name": "Nikkan Kogyo (Construction Machinery)", "lang": "ja", "url": "https://news.google.com/rss/search?q=site:nikkan.co.jp+%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
     
     # --- General Industry Search (Safety Net) ---
-    {"name": "Google News (Construction Machinery)", "lang": "ja", "url": "https://news.google.com/rss/search?q=%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
+    {"priority": 4, "name": "Google News (Construction Machinery)", "lang": "ja", "url": "https://news.google.com/rss/search?q=%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
 ]
 
 def safe_print(text):
@@ -108,20 +107,16 @@ def resolve_and_extract_content(url):
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--log-level=3") 
-        # Add user agent to avoid blocking
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.set_page_load_timeout(30) # 30 seconds timeout
+        driver.set_page_load_timeout(30)
         
         driver.get(url)
-        
-        # Wait for potential redirect
         time.sleep(3) 
         resolved_url = driver.current_url
         if "google.com" in resolved_url:
-             # Wait a bit longer if still on google
              time.sleep(2)
              resolved_url = driver.current_url
              
@@ -131,10 +126,7 @@ def resolve_and_extract_content(url):
         try:
             paragraphs = driver.find_elements(By.TAG_NAME, "p")
             full_text = "\n".join([p.text for p in paragraphs if len(p.text) > 20])
-            
-            # Smart cleaning for Notion blocks
             text_content = full_text
-            
             safe_print(f"Extracted {len(text_content)} characters.")
         except Exception as e:
             text_content = "Failed to extract content (Element not found)."
@@ -143,7 +135,6 @@ def resolve_and_extract_content(url):
         safe_print(f"Extraction failed: {e}")
         text_content = "Failed to extract content."
         try:
-             # Fallback resolving
              response = requests.get(url, allow_redirects=True, timeout=5)
              resolved_url = response.url
         except:
@@ -160,32 +151,26 @@ def resolve_and_extract_content(url):
 def analyze_article(title, body_text, lang):
     """
     Analyze article using Gemini.
-    - Translate Title
-    - Categorize
-    - Generate 3-line Summary
-    - Full Translation (if extraction successful)
     """
-    
-    # Truncate body text for AI prompt to stay within token limits
-    # (Still capturing significant context)
-    truncated_body = body_text[:3000] + "..." if len(body_text) > 3000 else body_text
+    truncated_body = body_text[:5000] + "..." if len(body_text) > 5000 else body_text
     
     prompt = f"""
-    You are an expert analyst. Process this news article.
-    
+    You are an expert industry analyst in the construction machinery sector.
+    Process this news article for a professional database.
+
     Title: {title}
     Original Language: {lang}
-    Body Text (Excerpt): 
+    Body Text: 
     {truncated_body}
     
     Tasks:
-    1. **Translate Title**: Natural Japanese title.
-    2. **Relevance Check**: TRUE if it's significant news (Product launch, Partnership, Market trend, Policy). FALSE if it's just raw stock data, simple earnings table, or irrelevant.
-    3. **Categorize Region**: [Africa, North America, India, China, Japan, Southeast Asia, Europe, Global].
-    4. **Categorize Segment**: [Utility, Forklift, Agriculture, Construction, Mining].
-    5. **Categorize Brand**: List relevant manufacturers mentioned [Komatsu, Caterpillar, Hitachi, Volvo, Liebherr, John Deere, Sany, XCMG, Zoomlion, Kobelco, Sumitomo, etc.].
-    6. **3-Line Summary**: Summarize the key points in Japanese in exactly 3 bullet points.
-    7. **Full Translation**: If the Original Language is NOT Japanese, provide a comprehensive natural Japanese translation of the Body Text. If it IS Japanese, just return "Original is Japanese".
+    1. **Translate Title**: Natural and professional Japanese title.
+    2. **Relevance Check**: TRUE if it's significant industry news (Product launch, Partnership, Market trend, Policy, ESG). FALSE if it's just raw stock data, simple earnings summary without context, or irrelevant content.
+    3. **Categorize Region**: Pick BEST from [Africa, North America, India, China, Japan, Southeast Asia, Europe, Global].
+    4. **Categorize Segment**: Pick ALL relevant from [Utility, Forklift, Agriculture, Construction, Mining].
+    5. **Categorize Brand**: List relevant manufacturers mentioned. Focus on the major 14: [Komatsu, Caterpillar, Hitachi, Volvo, Liebherr, John Deere, Sany, XCMG, Zoomlion, Kobelco, Sumitomo, Doosan, Bobcat, Kubota, JCB].
+    6. **3-Line Summary**: Summarize the key points in Japanese in exactly 3 concise bullet points. Maintain professional tone.
+    7. **Full Translation**: If the Original Language is NOT Japanese, provide a comprehensive natural Japanese translation of the Body Text. If it IS Japanese, return "Original is Japanese".
     
     Response Format (JSON Only):
     {{
@@ -218,28 +203,26 @@ def get_published_date_property_name():
         if results["results"]:
             props = results["results"][0]["properties"]
             for key in props.keys():
-                if key.startswith("Published Date"):
+                if key.lower().startswith("published date"):
                     return key
         return "Published Date"
     except:
         return "Published Date"
 
 def get_existing_urls():
-    """Fetch all unique 'Source URL' values from Notion using search."""
+    """Fetch all unique 'Source URL' values from Notion."""
     safe_print("Fetching existing URLs from Notion to prevent duplicates...")
     existing_urls = set()
     try:
         cursor = None
         has_more = True
         while has_more:
-            # Search is more robust in this version of the library
             response = notion.search(
                 start_cursor=cursor,
                 page_size=100,
                 filter={"property": "object", "value": "page"}
             )
             for page in response.get("results", []):
-                # Only collect from pages that have the Source URL property
                 url = page["properties"].get("Source URL", {}).get("url")
                 if url:
                     existing_urls.add(url)
@@ -249,28 +232,33 @@ def get_existing_urls():
         
         safe_print(f"Found {len(existing_urls)} existing URLs.")
     except Exception as e:
-        safe_print(f"Warning: Could not fetch existing URLs via search: {e}")
+        safe_print(f"Warning: Could not fetch existing URLs: {e}")
     return existing_urls
 
 def save_to_notion(source_name, article_data, ai_data, resolved_url, original_text):
     safe_print(f"Saving to Notion: {ai_data['translated_title']}")
     
     try:
-        dt = datetime.fromtimestamp(time.mktime(article_data.published_parsed))
+        # Better date handling
+        if hasattr(article_data, 'published_parsed') and article_data.published_parsed:
+            dt = datetime.fromtimestamp(time.mktime(article_data.published_parsed))
+        else:
+            dt = datetime.now()
         iso_date = dt.isoformat()
-    except:
+    except Exception as e:
+        safe_print(f"Date parsing error: {e}")
         iso_date = datetime.now().isoformat()
 
     published_date_prop = get_published_date_property_name()
 
-    # Handle summary as string or list from AI
+    # Summary preparation
     summary_data = ai_data.get("summary", "")
     if isinstance(summary_data, list):
         summary_text = "\n".join(summary_data)
     else:
         summary_text = str(summary_data)
 
-    # Content Blocks
+    # Content Blocks (Children)
     children = [
         {
             "object": "block",
@@ -289,8 +277,9 @@ def save_to_notion(source_name, article_data, ai_data, resolved_url, original_te
         }
     ]
     
-    # Add Translation if available
-    if ai_data.get("full_translation") and "Original is Japanese" not in ai_data["full_translation"]:
+    # Add Translation
+    translation = ai_data.get("full_translation", "")
+    if translation and "Original is Japanese" not in translation:
         children.append({
             "object": "block",
             "type": "heading_2",
@@ -298,8 +287,6 @@ def save_to_notion(source_name, article_data, ai_data, resolved_url, original_te
                 "rich_text": [{"type": "text", "text": {"content": "日本語訳"}}]
             }
         })
-        # Split translation into chunks (Notion limit 2000 chars per text block)
-        translation = ai_data["full_translation"]
         for i in range(0, len(translation), 2000):
             chunk = translation[i:i+2000]
             children.append({
@@ -310,7 +297,7 @@ def save_to_notion(source_name, article_data, ai_data, resolved_url, original_te
                 }
             })
 
-    # Add Original Text
+    # Add Original Text (Full Text Saving)
     children.append({
         "object": "block",
         "type": "heading_2",
@@ -318,116 +305,119 @@ def save_to_notion(source_name, article_data, ai_data, resolved_url, original_te
             "rich_text": [{"type": "text", "text": {"content": "原文"}}]
         }
     })
-    # Split original text
     if original_text:
-        text_to_save = original_text
-        for i in range(0, len(text_to_save), 2000):
-            chunk = text_to_save[i:i+2000]
+        for i in range(0, len(original_text), 2000):
+            chunk = original_text[i:i+2000]
             children.append({
                 "object": "block",
-                "type": "paragraph", # Or quote
+                "type": "paragraph",
                 "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": chunk}}]
+                    "rich_text": [{"type": "text", "text": {"content": chunk}, "annotations": {"italic": True}}]
                 }
             })
     
-    # Help AI errors: split by comma if multiple were returned as one string
+    # Clean multi-select helper - Fixed for List or String input
     def clean_multi_select(val):
         if not val: return []
-        # Split by comma and strip
-        parts = [p.strip() for p in val.replace("、", ",").split(",")]
+        if isinstance(val, list):
+            # If AI returns a list of strings
+            parts = [str(p).strip() for p in val]
+        else:
+            # If AI returns a single string with commas/delimiters
+            parts = [p.strip() for p in str(val).replace("、", ",").split(",")]
         return [{"name": p} for p in parts if p]
 
+    # Properties metadata
     properties = {
         "Title": {"title": [{"text": {"content": ai_data["translated_title"]}}]},
         "Source URL": {"url": resolved_url},
         "Source Name": {"select": {"name": source_name}},
         published_date_prop: {"date": {"start": iso_date}},
-        "Region": {"multi_select": clean_multi_select(ai_data["region"])},
-        "Segment": {"multi_select": clean_multi_select(ai_data["segment"])},
+        "Region": {"multi_select": clean_multi_select(ai_data.get("region"))},
+        "Segment": {"multi_select": clean_multi_select(ai_data.get("segment"))},
         "Brand": {"multi_select": clean_multi_select(ai_data.get("brand", ""))}
     }
     
     try:
+        # Check DATABASE_ID
+        if not DATABASE_ID:
+            raise ValueError("DATABASE_ID is empty. Please check your environment variables.")
+            
         new_page = notion.pages.create(
-            parent={"database_id": DATABASE_ID},
+            parent={"database_id": DATABASE_ID}, # Fixed validation error by ensuring ID is used correctly
             properties=properties,
-            children=children
+            children=children[:100] # Notion limit: up to 100 children in one request
         )
-        safe_print("Successfully saved to Notion!")
-        safe_print(f"Page URL: {new_page['url']}")
-        return True # Success
+        safe_print(f"Successfully saved to Notion! URL: {new_page['url']}")
+        return True
     except Exception as e:
         safe_print(f"Failed to save to Notion: {e}")
         if hasattr(e, 'body'):
-             safe_print(f"Error body: {e.body}")
-        return False # Failed
+             safe_print(f"Error detail: {e.body}")
+        return False
 
 def main():
+    # Setup UTF-8 for Windows console
     try:
         if sys.stdout.encoding.lower() != 'utf-8':
-             try:
-                 sys.stdout.reconfigure(encoding='utf-8')
-             except:
-                 pass
+            sys.stdout.reconfigure(encoding='utf-8')
     except:
         pass
 
-    target_counts = {"ja": 5, "en": 15}
+    target_counts = {"ja": 8, "en": 20} # Increased target slightly for better coverage
     saved_counts = {"ja": 0, "en": 0}
     
-    # Pre-fetch existing URLs
     existing_urls = get_existing_urls()
     
+    # Sort feeds by priority
+    sorted_feeds = sorted(RSS_FEEDS, key=lambda x: x.get("priority", 99))
+    
     try:
-        for feed in RSS_FEEDS:
+        for feed in sorted_feeds:
             lang = feed.get("lang", "en")
             if saved_counts[lang] >= target_counts[lang]:
                 continue
                 
-            safe_print(f"\nChecking source: {feed['name']} ({lang})")
+            safe_print(f"\nChecking source ({feed.get('priority')}): {feed['name']} ({lang})")
             article = fetch_latest_article(feed)
             
             if article:
-                safe_print(f"Found: {article.title}")
-                
-                # Check for duplicates before expensive processing
+                # Deduplication check
                 if article.link in existing_urls:
-                    safe_print(f"Article already exists in Notion: Skip.")
+                    safe_print(f"Article (RSS Link) already exists: Skip.")
                     continue
                 
                 resolved_url, body_text = resolve_and_extract_content(article.link)
                 
-                # Check resolved URL too (in case of different shortlinks)
                 if resolved_url in existing_urls:
-                    safe_print(f"Resolved URL already exists in Notion: Skip.")
+                    safe_print(f"Article (Resolved URL) already exists: Skip.")
                     continue
                 
-                if len(body_text) < 50:
-                     safe_print("Body text too short, skipping.")
+                if len(body_text) < 100:
+                     safe_print("Content too short, skipping.")
                      continue
                      
                 ai_result = analyze_article(article.title, body_text, lang)
                 
                 if ai_result:
                     if ai_result.get("is_relevant_news", False):
-                        safe_print("Article is RELEVANT. Saving...")
                         success = save_to_notion(feed['name'], article, ai_result, resolved_url, body_text)
                         if success:
                             saved_counts[lang] += 1
                     else:
-                        safe_print(f"Filtered out: {ai_result.get('translated_title')}")
+                        safe_print(f"Filtered (Irrelevant): {ai_result.get('translated_title')}")
                 else:
-                     safe_print("AI Failed.")
+                     safe_print("AI Analysis Failed.")
             else:
-                 safe_print("No articles found.")
+                 safe_print("No feeds found.")
             
-            if all(c >= t for c, t in zip(saved_counts.values(), target_counts.values())):
+            # Global stop condition
+            if all(saved_counts[l] >= target_counts[l] for l in saved_counts):
                 break
                 
-        safe_print(f"\nProcessing complete. Saved: {saved_counts}")
+        safe_print(f"\nCompleted! Total Saved: {saved_counts}")
     except Exception as e:
-        safe_print(f"Critical Error: {e}")
+        safe_print(f"Main Loop Error: {e}")
         traceback.print_exc()
 
 if __name__ == "__main__":
