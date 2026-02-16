@@ -364,25 +364,29 @@ def main():
     except:
         pass
 
-    target_counts = {"ja": 8, "en": 20} # Increased target slightly for better coverage
-    saved_counts = {"ja": 0, "en": 0}
+    # エコ運転モードの設定
+    MAX_ARTICLES_PER_RUN = 5
+    INTERVAL_SECONDS = 20
     
+    saved_total = 0
     existing_urls = get_existing_urls()
     
-    # Sort feeds by priority
+    # フィードを優先順位順にソート
     sorted_feeds = sorted(RSS_FEEDS, key=lambda x: x.get("priority", 99))
     
     try:
         for feed in sorted_feeds:
-            lang = feed.get("lang", "en")
-            if saved_counts[lang] >= target_counts[lang]:
-                continue
+            # 合計保存数が上限に達したら終了
+            if saved_total >= MAX_ARTICLES_PER_RUN:
+                safe_print(f"\nReached max processing limit ({MAX_ARTICLES_PER_RUN}). Finishing...")
+                break
                 
+            lang = feed.get("lang", "en")
             safe_print(f"\nChecking source ({feed.get('priority')}): {feed['name']} ({lang})")
             article = fetch_latest_article(feed)
             
             if article:
-                # Deduplication check
+                # 重複チェック
                 if article.link in existing_urls:
                     safe_print(f"Article (RSS Link) already exists: Skip.")
                     continue
@@ -396,26 +400,36 @@ def main():
                 if len(body_text) < 100:
                      safe_print("Content too short, skipping.")
                      continue
-                     
-                ai_result = analyze_article(article.title, body_text, lang)
                 
-                if ai_result:
-                    if ai_result.get("is_relevant_news", False):
-                        success = save_to_notion(feed['name'], article, ai_result, resolved_url, body_text)
-                        if success:
-                            saved_counts[lang] += 1
+                try:
+                    ai_result = analyze_article(article.title, body_text, lang)
+                    
+                    if ai_result:
+                        if ai_result.get("is_relevant_news", False):
+                            success = save_to_notion(feed['name'], article, ai_result, resolved_url, body_text)
+                            if success:
+                                saved_total += 1
+                                # 記事を1件処理するごとにスリープを入れる（エコ運転）
+                                if saved_total < MAX_ARTICLES_PER_RUN:
+                                    safe_print(f"Waiting {INTERVAL_SECONDS} seconds for API quota...")
+                                    time.sleep(INTERVAL_SECONDS)
+                        else:
+                            safe_print(f"Filtered (Irrelevant): {ai_result.get('translated_title')}")
                     else:
-                        safe_print(f"Filtered (Irrelevant): {ai_result.get('translated_title')}")
-                else:
-                     safe_print("AI Analysis Failed.")
+                         safe_print("AI Analysis Failed.")
+                         
+                except Exception as api_error:
+                    # 429エラー等の要因で中断が必要な場合
+                    if "429" in str(api_error) or "ResourceExhausted" in str(api_error):
+                        safe_print("API Quota limit reached. Stopping process and keeping successful saves.")
+                        break # ループを抜けて正常終了へ
+                    else:
+                        safe_print(f"Unhandled error during processing: {api_error}")
+                        continue
             else:
                  safe_print("No feeds found.")
-            
-            # Global stop condition
-            if all(saved_counts[l] >= target_counts[l] for l in saved_counts):
-                break
                 
-        safe_print(f"\nCompleted! Total Saved: {saved_counts}")
+        safe_print(f"\nCompleted! Total Saved in this run: {saved_total}")
     except Exception as e:
         safe_print(f"Main Loop Error: {e}")
         traceback.print_exc()
