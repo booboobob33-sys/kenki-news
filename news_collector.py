@@ -149,8 +149,8 @@ def resolve_and_extract_content(url):
     return resolved_url, text_content
 
 def analyze_article(title, body_text, lang):
-    """Geminiを使用して記事を分析する。API制限対策のため入力テキストを2000文字に制限。"""
-    # 3. AIへの送信データの最適化 (トークン節約と安定化)
+    """Geminiを使用して記事を分析する。429エラー時は70秒待機して1度だけリトライする。"""
+    # 3. AIへの送信データの最適化 (本文先頭2000文字制限)
     truncated_body = body_text[:2000] + "..." if len(body_text) > 2000 else body_text
     
     prompt = f"""
@@ -183,21 +183,29 @@ def analyze_article(title, body_text, lang):
     }}
     """
     
-    try:
-        response = model.generate_content(prompt)
-        text = response.text.strip()
-        if text.startswith("```json"):
-            text = text[7:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-        return json.loads(text)
-    except Exception as e:
-        if "429" in str(e) or "Quota Exceeded" in str(e) or "ResourceExhausted" in str(e):
-            safe_print("CRITICAL: Gemini API Rate Limit (429) hit.")
-            raise e
-        safe_print(f"AI Analysis failed: {e}")
-        return None
+    max_retries = 1
+    for attempt in range(max_retries + 1):
+        try:
+            response = model.generate_content(prompt)
+            text = response.text.strip()
+            if text.startswith("```json"):
+                text = text[7:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+            return json.loads(text)
+        except Exception as e:
+            error_msg = str(e)
+            if "429" in error_msg or "Quota Exceeded" in error_msg or "ResourceExhausted" in error_msg:
+                if attempt < max_retries:
+                    safe_print(f"Gemini API 429 hit. Waiting 70 seconds for retry (Attempt {attempt+1}/{max_retries})...")
+                    time.sleep(70)
+                    continue
+                else:
+                    safe_print("Gemini API 429 hit. Max retries reached.")
+                    raise e
+            safe_print(f"AI Analysis failed: {e}")
+            return None
 
 def get_published_date_property_name():
     try:
@@ -238,7 +246,7 @@ def get_existing_urls():
     return existing_urls
 
 def save_to_notion(source_name, article_data, ai_data, resolved_url, original_text):
-    """Notionにページを保存する。既存の不備修正（Database ID, Brand処理）を維持。"""
+    """Notionに保存。2000文字制限の徹底、既存のエラー修正（Database ID, Brand処理）を維持。"""
     safe_print(f"Saving to Notion: {ai_data['translated_title']}")
     
     try:
@@ -263,24 +271,12 @@ def save_to_notion(source_name, article_data, ai_data, resolved_url, original_te
     # Translation
     translation = ai_data.get("full_translation", "")
     if translation and "Original is Japanese" not in translation:
-        children.append({
-            "object": "block",
-            "type": "heading_2",
-            "heading_2": {
-                "rich_text": [{"type": "text", "text": {"content": "日本語訳"}}]
-            }
-        })
-        for i in range(0, len(translation), 2000):
-            chunk = translation[i:i+2000]
-            children.append({
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": chunk}}]
-                }
-            })
+        children.append({"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "日本語訳"}}]}})
+        # Simple limit for translation as well to be safe
+        truncated_trans = translation[:2000]
+        children.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": truncated_trans}}]}})
 
-    # 2. 2000文字制限とリンク対応 (Notion本文)
+    # --- 2000文字制限の徹底 (原文) ---
     children.append({"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "原文"}}]}})
     if original_text:
         display_text = original_text
@@ -295,14 +291,12 @@ def save_to_notion(source_name, article_data, ai_data, resolved_url, original_te
             }
         })
     
-    # Clean multi-select helper - Fixed for List or String input
+    # --- Brand名のリスト処理 (AttributeError対策) の維持 ---
     def clean_multi_select(val):
         if not val: return []
         if isinstance(val, list):
-            # If AI returns a list of strings
             parts = [str(p).strip() for p in val]
         else:
-            # If AI returns a single string with commas/delimiters
             parts = [p.strip() for p in str(val).replace("、", ",").split(",")]
         return [{"name": p} for p in parts if p]
 
@@ -318,7 +312,7 @@ def save_to_notion(source_name, article_data, ai_data, resolved_url, original_te
     }
     
     try:
-        # Check DATABASE_ID
+        # --- Database ID設定不備の修正維持 ---
         if not DATABASE_ID:
             raise ValueError("DATABASE_ID is empty. Please check your environment variables.")
             
@@ -343,14 +337,14 @@ def main():
     except:
         pass
 
-    # 1. ループ処理と待機
+    # --- 定期休憩（Chunk Sleep）の設定 ---
     CHUNK_SIZE = 3
     LONG_SLEEP_SECONDS = 60
     
     saved_total = 0
     existing_urls = get_existing_urls()
     
-    # 5. 優先巡回
+    # 優先順位順にソート（14社・専門メディア優先）
     sorted_feeds = sorted(RSS_FEEDS, key=lambda x: x.get("priority", 99))
     
     try:
@@ -383,9 +377,9 @@ def main():
                             success = save_to_notion(feed['name'], article, ai_result, resolved_url, body_text)
                             if success:
                                 saved_total += 1
-                                # 1. 3件処理するごとに1分間スリープ
+                                # 3件の保存に成功するたびに60秒待機
                                 if saved_total % CHUNK_SIZE == 0:
-                                    safe_print(f"\nSaved {saved_total} items. Sleeping {LONG_SLEEP_SECONDS} seconds for API cooling...")
+                                    safe_print(f"\nSaved {saved_total} items. Sleeping {LONG_SLEEP_SECONDS} seconds to reset quota...")
                                     time.sleep(LONG_SLEEP_SECONDS)
                                 else:
                                     # 短い待機
@@ -396,17 +390,17 @@ def main():
                          safe_print("AI Analysis Failed.")
                          
                 except Exception as api_error:
-                    # 429エラー等の要因で中断が必要な場合
+                    # リトライしてもなお429の場合
                     if "429" in str(api_error) or "ResourceExhausted" in str(api_error):
-                        safe_print("API Quota limit reached. Stopping and keeping successful saves.")
-                        break
+                        safe_print("API Quota limit persistent. Ending run safely.")
+                        break 
                     else:
-                        safe_print(f"Unhandled error: {api_error}")
+                        safe_print(f"Unhandled error during processing: {api_error}")
                         continue
             else:
                  safe_print("No feeds found.")
                 
-        safe_print(f"\nCompleted! Total Saved: {saved_total}")
+        safe_print(f"\nCompleted! Total Saved in this run: {saved_total}")
     except Exception as e:
         safe_print(f"Main Loop Error: {e}")
         traceback.print_exc()
