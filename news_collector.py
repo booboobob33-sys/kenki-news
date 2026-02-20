@@ -1,4 +1,3 @@
-
 import requests
 import feedparser
 import google.generativeai as genai
@@ -27,7 +26,7 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
 DATABASE_ID = os.getenv("DATABASE_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# AI Configuration
+# AI Configuration (Updated for Google Cloud Paid Tier)
 genai.configure(api_key=GEMINI_API_KEY, transport='rest')
 model = genai.GenerativeModel('gemini-1.5-flash')
 
@@ -35,7 +34,6 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 notion = Client(auth=NOTION_TOKEN)
 
 # News Sources
-# Prioritizing: 1. Specialized Media, 2. Corporate Newsrooms (14 Brands), 3. Japanese Media, 4. General
 RSS_FEEDS = [
     # --- Priority Specialized Industry Media ---
     {"priority": 1, "name": "International Construction (KHL)", "lang": "en", "url": "https://news.google.com/rss/search?q=site:khl.com+International+Construction&hl=en-US&gl=US&ceid=US:en"},
@@ -105,13 +103,13 @@ def resolve_and_extract_content(url):
         chrome_options = Options()
         chrome_options.add_argument("--headless")
         chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-dev-shm-usage") # Fix memory issues in headless environments
         chrome_options.add_argument("--log-level=3") 
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.set_page_load_timeout(60)
+        driver.set_page_load_timeout(60) # Extended timeout for better reliability
         
         driver.get(url)
         time.sleep(3) 
@@ -272,7 +270,6 @@ def save_to_notion(source_name, article_data, ai_data, resolved_url, original_te
     translation = ai_data.get("full_translation", "")
     if translation and "Original is Japanese" not in translation:
         children.append({"object": "block", "type": "heading_2", "heading_2": {"rich_text": [{"type": "text", "text": {"content": "日本語訳"}}]}})
-        # Simple limit for translation as well to be safe
         truncated_trans = translation[:2000]
         children.append({"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": truncated_trans}}]}})
 
@@ -312,14 +309,13 @@ def save_to_notion(source_name, article_data, ai_data, resolved_url, original_te
     }
     
     try:
-        # --- Database ID設定不備の修正維持 ---
         if not DATABASE_ID:
             raise ValueError("DATABASE_ID is empty. Please check your environment variables.")
             
         new_page = notion.pages.create(
-            parent={"database_id": DATABASE_ID}, # Fixed validation error by ensuring ID is used correctly
+            parent={"database_id": DATABASE_ID},
             properties=properties,
-            children=children[:100] # Notion limit: up to 100 children in one request
+            children=children[:100]
         )
         safe_print(f"Successfully saved to Notion! URL: {new_page['url']}")
         return True
@@ -344,7 +340,6 @@ def main():
     saved_total = 0
     existing_urls = get_existing_urls()
     
-    # 優先順位順にソート（14社・専門メディア優先）
     sorted_feeds = sorted(RSS_FEEDS, key=lambda x: x.get("priority", 99))
     
     try:
@@ -354,7 +349,6 @@ def main():
             article = fetch_latest_article(feed)
             
             if article:
-                # 重複チェック
                 if article.link in existing_urls:
                     safe_print(f"Article exists: Skip.")
                     continue
@@ -377,12 +371,10 @@ def main():
                             success = save_to_notion(feed['name'], article, ai_result, resolved_url, body_text)
                             if success:
                                 saved_total += 1
-                                # 3件の保存に成功するたびに60秒待機
                                 if saved_total % CHUNK_SIZE == 0:
                                     safe_print(f"\nSaved {saved_total} items. Sleeping {LONG_SLEEP_SECONDS} seconds to reset quota...")
                                     time.sleep(LONG_SLEEP_SECONDS)
                                 else:
-                                    # 短い待機
                                     time.sleep(5)
                         else:
                             safe_print(f"Filtered (Irrelevant): {ai_result.get('translated_title')}")
@@ -390,7 +382,6 @@ def main():
                          safe_print("AI Analysis Failed.")
                          
                 except Exception as api_error:
-                    # リトライしてもなお429の場合
                     if "429" in str(api_error) or "ResourceExhausted" in str(api_error):
                         safe_print("API Quota limit persistent. Ending run safely.")
                         break 
