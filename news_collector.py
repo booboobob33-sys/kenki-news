@@ -26,9 +26,9 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
 DATABASE_ID = os.getenv("DATABASE_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-# AI Configuration (Updated for Google Cloud Paid Tier stability)
-genai.configure(api_key=GEMINI_API_KEY, transport='rest', default_api_version='v1')
-model = genai.GenerativeModel('models/gemini-1.5-flash')
+# AI Configuration (Updated for compatibility and Google Cloud Paid Tier stability)
+genai.configure(api_key=GEMINI_API_KEY, transport='rest')
+model = genai.GenerativeModel(model_name="models/gemini-1.5-flash")
 
 # Notion Client
 notion = Client(auth=NOTION_TOKEN)
