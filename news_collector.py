@@ -28,8 +28,8 @@ DATABASE_ID = os.getenv("DATABASE_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # AI Configuration
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash') # Updated to latest stable to match Google Cloud quota settings
+genai.configure(api_key=GEMINI_API_KEY, transport='rest')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 # Notion Client
 notion = Client(auth=NOTION_TOKEN)
@@ -111,7 +111,7 @@ def resolve_and_extract_content(url):
 
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.set_page_load_timeout(30)
+        driver.set_page_load_timeout(60)
         
         driver.get(url)
         time.sleep(3) 
