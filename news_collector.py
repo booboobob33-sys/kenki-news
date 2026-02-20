@@ -29,7 +29,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # AI Configuration
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash') # Updated to latest stable available for generic tasks if needed
+model = genai.GenerativeModel('gemini-1.5-flash') # Updated to latest stable to match Google Cloud quota settings
 
 # Notion Client
 notion = Client(auth=NOTION_TOKEN)
