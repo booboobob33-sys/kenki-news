@@ -78,9 +78,31 @@ def safe_print(text):
 def fetch_latest_article(feed_config):
     safe_print(f"Fetching news for {feed_config['name']}...")
     try:
-        feed = feedparser.parse(feed_config['url'])
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        # Use requests to fetch with headers, then parse with feedparser
+        response = requests.get(feed_config['url'], headers=headers, timeout=20)
+        safe_print(f"  HTTP Status: {response.status_code}")
+        
+        if response.status_code != 200:
+            safe_print(f"  Failed to fetch feed. Status code: {response.status_code}")
+            return None
+
+        feed = feedparser.parse(response.content)
+        
+        if hasattr(feed, 'bozo') and feed.bozo:
+            safe_print(f"  Feed parsing warning/error: {feed.bozo_exception}")
+
         if feed.entries:
+            safe_print(f"  Found {len(feed.entries)} articles. Processing latest...")
             return feed.entries[0]
+        else:
+            safe_print("  No entries found in this feed.")
+            # For debugging, print a snippet of the content if 0 entries
+            content_snippet = response.text[:200].replace('\n', ' ')
+            safe_print(f"  Content Snippet: {content_snippet}")
+            
     except Exception as e:
         safe_print(f"Error fetching RSS: {e}")
     return None
