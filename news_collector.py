@@ -15,6 +15,15 @@ NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
 DATABASE_ID = os.getenv("DATABASE_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
+# Diagnostic Log for environment
+def check_env():
+    mask = lambda s: s[:4] + "***" if s else "MISSING"
+    print(f"--- Environment Check ---")
+    print(f"NOTION_TOKEN: {mask(NOTION_TOKEN)}")
+    print(f"DATABASE_ID: {mask(DATABASE_ID)}")
+    print(f"GEMINI_API_KEY: {mask(GEMINI_API_KEY)}")
+    print(f"-------------------------")
+
 # AI Configuration (v1 REST for Paid Tier stability)
 genai.configure(api_key=GEMINI_API_KEY, transport='rest')
 model = genai.GenerativeModel(model_name="gemini-1.5-flash")
@@ -22,17 +31,19 @@ model = genai.GenerativeModel(model_name="gemini-1.5-flash")
 # Notion Client
 notion = Client(auth=NOTION_TOKEN)
 
-# ニュースソース設定 (RSSフィードに一本化)
+# ニュースソース設定 (Googleニュース検索ベース。ロボット判定回避のためUser-Agentを厳重に指定)
+# 検索ワード: 建設機械, 鉱山機械, コマツ, 日立建機, Caterpillar, Komatsu
 RSS_FEEDS = [
-    {"name": "Yahooニュース (主要)", "url": "https://news.yahoo.co.jp/rss/topics/top-pickups.xml", "category": "General"},
-    {"name": "Yahooニュース (IT・科学)", "url": "https://news.yahoo.co.jp/rss/topics/it.xml", "category": "General"},
-    {"name": "Yahooニュース (経済)", "url": "https://news.yahoo.co.jp/rss/topics/business.xml", "category": "General"},
-    {"name": "KHL Construction News", "url": "https://news.google.com/rss/search?q=site:khl.com+International+Construction&hl=en-US&gl=US&ceid=US:en", "category": "Construction"},
-    {"name": "Mining.com", "url": "https://www.mining.com/feed/", "category": "Mining"}
+    {"name": "Googleニュース (建設機械)", "url": "https://news.google.com/rss/search?q=%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
+    {"name": "Googleニュース (鉱山機械)", "url": "https://news.google.com/rss/search?q=%E9%89%B1%E5%B1%B1%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
+    {"name": "Googleニュース (コマツ/Komatsu)", "url": "https://news.google.com/rss/search?q=Komatsu+OR+%E3%82%B3%E3%83%9E%E3%83%84&hl=ja&gl=JP&ceid=JP:ja"},
+    {"name": "Googleニュース (日立建機/Hitachi CM)", "url": "https://news.google.com/rss/search?q=Hitachi+Construction+Machinery+OR+%E6%97%A5%E7%AB%8B%E5%BB%BA%E6%A9%9F&hl=ja&gl=JP&ceid=JP:ja"},
+    {"name": "KHL Construction News", "url": "https://news.google.com/rss/search?q=site:khl.com+International+Construction&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Mining.com", "url": "https://www.mining.com/feed/"}
 ]
 
 def safe_print(text):
-    """Safely print text handling potential encoding errors (Windows/Linux)."""
+    """Safely print text handling potential encoding errors."""
     try:
         print(text, flush=True)
     except Exception:
@@ -42,59 +53,88 @@ def safe_print(text):
              pass
 
 def fetch_latest_article(feed_config):
-    safe_print(f"Fetching news for {feed_config['name']}...")
+    safe_print(f"\n[FETCH] Processing: {feed_config['name']}")
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36',
+            'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8',
+            'Referer': 'https://www.google.com/'
         }
         response = requests.get(feed_config['url'], headers=headers, timeout=20)
-        safe_print(f"  HTTP Status: {response.status_code}")
         
         if response.status_code != 200:
+            safe_print(f"  [ERROR] HTTP {response.status_code} for {feed_config['name']}")
             return None
 
         feed = feedparser.parse(response.content)
         if feed.entries:
+            # 取得できた記事の数をログ
+            safe_print(f"  [INFO] Found {len(feed.entries)} entries. Analyzing latest article...")
             entry = feed.entries[0]
-            safe_print(f"  Found article: {entry.title}")
+            safe_print(f"  [INFO] Title: {entry.title}")
+            
+            # 概要（summary/description）が空でないか確認
+            summary = entry.get("summary", entry.get("description", ""))
+            if not summary or len(summary) < 10:
+                safe_print("  [WARN] Summary is too short/empty. Will rely on title.")
+                
             return {
                 "title": entry.title,
                 "link": entry.link,
-                "summary": entry.get("summary", entry.get("description", ""))
+                "summary": summary
             }
+        else:
+            safe_print(f"  [WARN] No entries found for {feed_config['name']}.")
     except Exception as e:
-        safe_print(f"Error fetching RSS: {e}")
+        safe_print(f"  [ERROR] Fetch error: {e}")
     return None
 
 def analyze_article_with_gemini(article_data):
-    # 本文スクレイピングを廃止し、RSSのタイトルと概要からAI判定
+    safe_print(f"  [AI] Analyzing relevance via Gemini...")
+    
     prompt = f"""
-以下のニュース（タイトルと概要）を分析し、建設機械、鉱山機械、農業機械、林業機械に関連するポジティブまたは重要な記事か判定してください。
-関連がある場合のみ、指定のJSON形式で出力してください。
+あなたは建設機械業界の専門アナリストです。
+以下のニュース（タイトルと概要）を分析し、**建設機械、鉱山機械、農業機械、林業機械**のいずれかの製品、メーカー、または業界動向に直接関連する「重要またはポジティブ」な記事か判定してください。
 
 【タイトル】: {article_data['title']}
 【概要】: {article_data['summary']}
 
-出力フォーマット（関連がない、または重要でない場合は null とだけ出力）:
+判定基準:
+- 関連がある場合のみ、指定のJSON形式で出力してください。
+- 関連がない（一般ニュース、関係ない株式ニュース等）場合は、理由を添えずに 'null' とだけ出力してください。
+
+出力フォーマット（関連がある場合のみ）:
 {{
-  "brand": "メーカー名（Komatsu, Caterpillar, Hitachi 等。不明な場合は 'Other'）",
-  "segment": "製品区分（Excavator, Loader, Mining, Forestry 等）",
-  "summary_ja": "内容の簡潔な日本語要約（200文字以内）"
+  "brand": "主要メーカー名（Komatsu, Caterpillar, Hitachi, John Deere, Volvo, Liebherr, Sany, XCMG, Kobelco, Sumitomo, Kubota, JCB 等。不明な場合は 'Other'）",
+  "segment": "製品区分（Excavator, Loader, Mining, Forestry, Utility 等）",
+  "summary_ja": "内容の簡潔な日本語要約（200文字以内）",
+  "confidence": "判定の自信（0.0-1.0）"
 }}
 """
     try:
         response = model.generate_content(prompt)
-        text = response.text.strip()
-        if "null" in text.lower() and "{" not in text:
+        raw_text = response.text.strip()
+        
+        # 診断用: AIの生の回答をログ
+        # safe_print(f"  [AI DEBUG] Raw response: {raw_text[:100]}...")
+        
+        if "null" in raw_text.lower() and "{" not in raw_text:
+            safe_print("  [SKIP] AI judged as NOT relevant.")
             return None
         
-        json_match = re.search(r"\{.*\}", text, re.DOTALL)
+        json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
         if json_match:
-            return json.loads(json_match.group())
+            result = json.loads(json_match.group())
+            safe_print(f"  [MATCH] Brand: {result.get('brand')}, Segment: {result.get('segment')}")
+            return result
+        else:
+            safe_print(f"  [ERROR] AI returned non-JSON text: {raw_text[:100]}")
+            return None
+            
     except Exception as e:
         if "429" in str(e):
             raise e
-        safe_print(f"AI Analysis Error: {e}")
+        safe_print(f"  [ERROR] AI Error: {e}")
     return None
 
 def clean_multi_select(val):
@@ -106,6 +146,7 @@ def clean_multi_select(val):
     return [{"name": p} for p in parts if p]
 
 def save_to_notion(result, article_data):
+    safe_print(f"  [NOTION] Saving: {article_data['title'][:40]}...")
     try:
         # 重複チェック (Source URL プロパティ)
         query = notion.databases.query(
@@ -113,14 +154,14 @@ def save_to_notion(result, article_data):
             filter={"property": "Source URL", "url": {"equals": article_data['link']}}
         )
         if query["results"]:
-            safe_print("  Article already exists in Notion. Skipping.")
+            safe_print("  [SKIP] Duplicate URL found in Notion.")
             return False
 
         notion.pages.create(
             parent={"database_id": DATABASE_ID},
             properties={
                 "Title": {"title": [{"text": {"content": article_data['title'][:100]}}]},
-                "Source Name": {"select": {"name": "RSS Collector"}},
+                "Source Name": {"select": {"name": "RSS Search Collector"}},
                 "Source URL": {"url": article_data['link']},
                 "Summary": {"rich_text": [{"text": {"content": result.get("summary_ja", "")[:2000]}}]},
                 "Brand": {"multi_select": clean_multi_select(result.get("brand", "Other"))},
@@ -128,14 +169,17 @@ def save_to_notion(result, article_data):
                 "Date": {"date": {"start": datetime.now().isoformat()}}
             }
         )
-        safe_print(f"  Successfully saved to Notion: {article_data['title'][:50]}...")
+        safe_print("  [SUCCESS] Saved to Notion.")
         return True
     except Exception as e:
-        safe_print(f"Error saving to Notion: {e}")
+        safe_print(f"  [ERROR] Notion Save Error: {e}")
+        # 診断用: トレースバックを出力
+        # traceback.print_exc()
         return False
 
 def main():
-    safe_print("=== News Collection Started (RSS Comprehensive Mode) ===")
+    safe_print("=== News Collection (Diagnostic Mode) ===")
+    check_env()
     processed_count = 0
     
     for feed_config in RSS_FEEDS:
@@ -148,27 +192,24 @@ def main():
                 if result:
                     if save_to_notion(result, article_data):
                         processed_count += 1
-                        # 3件ごとに60秒休憩 (Quota対策)
+                        # Paid Tier Quota Management
                         if processed_count % 3 == 0:
-                            safe_print("Taking a 60s break to respect API quota...")
+                            safe_print("  [WAIT] Sleeping 60s for quota...")
                             time.sleep(60)
-                else:
-                    safe_print("  Not relevant to machinery. Skipping.")
-            
+                
             except Exception as e:
                 if "429" in str(e):
-                    safe_print("Quota exceeded. Waiting 70 seconds before retry...")
+                    safe_print("  [WAIT] 429 Hit. Waiting 70s...")
                     time.sleep(70)
                     try:
                         result = analyze_article_with_gemini(article_data)
-                        if result:
-                            save_to_notion(result, article_data)
-                    except:
-                        pass
+                        if result: save_to_notion(result, article_data)
+                    except: pass
         
-        time.sleep(5)
+        # サイト負荷に配慮して1件ごとに待機
+        time.sleep(10)
 
-    safe_print(f"=== Process Completed. Saved {processed_count} news items. ===")
+    safe_print(f"\n=== Process Finished. Saved {processed_count} items. ===")
 
 if __name__ == "__main__":
     main()
