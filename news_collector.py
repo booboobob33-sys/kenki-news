@@ -25,8 +25,37 @@ def check_env():
     print(f"-------------------------")
 
 # AI Configuration (v1 REST for Paid Tier stability)
+safe_print(f"SDK Version: {genai.__version__}")
 genai.configure(api_key=GEMINI_API_KEY, transport='rest')
-model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+
+def get_best_model():
+    """Discover available models to avoid 404 errors."""
+    try:
+        models = [m.name for m in genai.list_models()]
+        preferred = [
+            "models/gemini-1.5-flash",
+            "models/gemini-1.5-flash-latest",
+            "models/gemini-1.5-flash-001",
+            "models/gemini-1.5-flash-002",
+            "models/gemini-1.0-pro"
+        ]
+        for p in preferred:
+            if p in models:
+                safe_print(f"  [AI INFO] Using model: {p}")
+                return genai.GenerativeModel(model_name=p)
+        
+        # Fallback to the first available flash or pro model
+        for m in models:
+            if "flash" in m or "pro" in m:
+                safe_print(f"  [AI INFO] Falling back to available model: {m}")
+                return genai.GenerativeModel(model_name=m)
+    except Exception as e:
+        safe_print(f"  [AI WARN] Could not list models: {e}")
+    
+    # Absolute fallback
+    return genai.GenerativeModel(model_name="gemini-1.5-flash")
+
+model = get_best_model()
 
 # Notion Client
 notion = Client(auth=NOTION_TOKEN)
