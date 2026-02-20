@@ -34,10 +34,14 @@ def check_env():
     print(f"GEMINI_API_KEY: {mask(GEMINI_API_KEY)}")
     print(f"-------------------------")
 
-# AI Configuration (v1 REST for Paid Tier stability)
+# --- Initial Diagnostics ---
 import notion_client
+safe_print(f"Python Executable: {sys.executable}")
 safe_print(f"SDK Version (Gemini): {genai.__version__}")
 safe_print(f"SDK Version (Notion): {getattr(notion_client, '__version__', 'Unknown')}")
+check_env()
+
+# AI Configuration (v1 REST for Paid Tier stability)
 genai.configure(api_key=GEMINI_API_KEY, transport='rest')
 
 def get_best_model():
@@ -71,8 +75,6 @@ model = get_best_model()
 
 # Notion Client
 notion = Client(auth=NOTION_TOKEN)
-if not hasattr(notion.databases, "query"):
-    safe_print("  [CRITICAL] notion-client is too old. Please run: pip install --upgrade notion-client")
 
 # ニュースソース設定 (Googleニュース検索ベース。ロボット判定回避のためUser-Agentを厳重に指定)
 # 検索ワード: 建設機械, 鉱山機械, コマツ, 日立建機, Caterpillar, Komatsu
@@ -182,14 +184,20 @@ def clean_multi_select(val):
 def save_to_notion(result, article_data):
     safe_print(f"  [NOTION] Saving: {article_data['title'][:40]}...")
     try:
-        # 重複チェック (Source URL プロパティ)
-        query = notion.databases.query(
-            database_id=DATABASE_ID,
-            filter={"property": "Source URL", "url": {"equals": article_data['link']}}
-        )
-        if query["results"]:
-            safe_print("  [SKIP] Duplicate URL found in Notion.")
-            return False
+        # 重複チェック (防御的に実装: queryが失敗しても保存を続行)
+        try:
+            query = notion.databases.query(
+                database_id=DATABASE_ID,
+                filter={"property": "Source URL", "url": {"equals": article_data['link']}}
+            )
+            if query["results"]:
+                safe_print("  [SKIP] Duplicate URL found in Notion.")
+                return False
+        except Exception as qe:
+            safe_print(f"  [WARN] Duplication check failed (skipping check): {qe}")
+            # Diagnostic: どんなメソッドが実在するか出力
+            if "attribute" in str(qe).lower():
+                safe_print(f"  [DEBUG] notion.databases methods: {dir(notion.databases)}")
 
         notion.pages.create(
             parent={"database_id": DATABASE_ID},
@@ -212,8 +220,7 @@ def save_to_notion(result, article_data):
         return False
 
 def main():
-    safe_print("=== News Collection (Diagnostic Mode) ===")
-    check_env()
+    safe_print("=== News Collection (Diagnostic & Robust Mode) ===")
     processed_count = 0
     
     for feed_config in RSS_FEEDS:
