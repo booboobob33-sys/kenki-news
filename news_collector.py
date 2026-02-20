@@ -35,7 +35,9 @@ def check_env():
     print(f"-------------------------")
 
 # AI Configuration (v1 REST for Paid Tier stability)
-safe_print(f"SDK Version: {genai.__version__}")
+import notion_client
+safe_print(f"SDK Version (Gemini): {genai.__version__}")
+safe_print(f"SDK Version (Notion): {getattr(notion_client, '__version__', 'Unknown')}")
 genai.configure(api_key=GEMINI_API_KEY, transport='rest')
 
 def get_best_model():
@@ -69,6 +71,8 @@ model = get_best_model()
 
 # Notion Client
 notion = Client(auth=NOTION_TOKEN)
+if not hasattr(notion.databases, "query"):
+    safe_print("  [CRITICAL] notion-client is too old. Please run: pip install --upgrade notion-client")
 
 # ニュースソース設定 (Googleニュース検索ベース。ロボット判定回避のためUser-Agentを厳重に指定)
 # 検索ワード: 建設機械, 鉱山機械, コマツ, 日立建機, Caterpillar, Komatsu
