@@ -10,6 +10,16 @@ import re
 import sys
 import traceback
 
+def safe_print(text):
+    """Safely print text handling potential encoding errors."""
+    try:
+        print(text, flush=True)
+    except Exception:
+        try:
+            print(str(text).encode('utf-8', errors='replace').decode('utf-8'), flush=True)
+        except:
+             pass
+
 # --- Configuration ---
 NOTION_TOKEN = os.getenv("NOTION_TOKEN", "")
 DATABASE_ID = os.getenv("DATABASE_ID", "")
@@ -71,15 +81,6 @@ RSS_FEEDS = [
     {"name": "Mining.com", "url": "https://www.mining.com/feed/"}
 ]
 
-def safe_print(text):
-    """Safely print text handling potential encoding errors."""
-    try:
-        print(text, flush=True)
-    except Exception:
-        try:
-            print(str(text).encode('utf-8', errors='replace').decode('utf-8'), flush=True)
-        except:
-             pass
 
 def fetch_latest_article(feed_config):
     safe_print(f"\n[FETCH] Processing: {feed_config['name']}")
