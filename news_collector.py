@@ -65,13 +65,24 @@ notion = Client(auth=NOTION_TOKEN)
 def get_db_properties():
     """Fetch database properties to be schema-aware."""
     try:
+        # 1. Try retrieve database
         db = notion.databases.retrieve(database_id=DATABASE_ID)
         props = list(db.get("properties", {}).keys())
-        safe_print(f"  [NOTION] Available properties: {', '.join(props)}")
-        return props
+        if props:
+            safe_print(f"  [NOTION] Available properties: {', '.join(props)}")
+            return props
+            
+        # 2. Fallback to searching first page if retrieve is empty
+        safe_print("  [NOTION] Retrieve returned no properties. Trying search fallback...")
+        res = notion.databases.query(database_id=DATABASE_ID, page_size=1)
+        if res.get("results"):
+            props = list(res["results"][0].get("properties", {}).keys())
+            safe_print(f"  [NOTION] Found properties via search: {', '.join(props)}")
+            return props
+            
     except Exception as e:
         safe_print(f"  [WARN] Could not retrieve DB schema: {e}")
-        return []
+    return []
 
 DB_PROPS = get_db_properties()
 
@@ -86,21 +97,36 @@ RSS_FEEDS = [
 
 def analyze_article_with_gemini(article_data):
     safe_print(f"  [AI] Analyzing: {article_data['title'][:40]}...")
-    prompt = f"""建設機械業界の判定: ニュース（{article_data['title']} / {article_data['summary']}）を分析。
-【出力形式】関連あれば以下のJSON、なければ 'null'。
+    prompt = f"""あなたは建設機械業界の専門家です。
+以下のニュースが建設・鉱山・農林機械、またはそのメーカーに関連するか判定してください。
+
+【タイトル】: {article_data['title']}
+【概要】: {article_data['summary']}
+
+【出力形式】関連あれば以下のJSON、なければ 'null' とだけ出力してください。
 {{
   "brand": "メーカー名",
-  "segment": "製品区分（Excavator, Mining等）",
-  "region": "地域（Global, Japan, North America, Europe, China, Southeast Asia等）",
+  "segment": "製品区分",
+  "region": "地域（Japan, Global, China等）",
   "summary_ja": "日本語要約（200字）"
 }}"""
     try:
         response = model.generate_content(prompt)
         text = response.text.strip()
-        if "null" in text.lower() and "{" not in text: return None
+        
+        if "null" in text.lower() and "{" not in text:
+            safe_print("  [SKIP] AI judged as NOT relevant.")
+            return None
+            
         match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match: return json.loads(match.group())
-    except: pass
+        if match:
+            res = json.loads(match.group())
+            safe_print(f"  [MATCH] Brand: {res.get('brand')}, Region: {res.get('region')}")
+            return res
+        else:
+            safe_print(f"  [WARN] AI returned no JSON: {text[:50]}")
+    except Exception as e:
+        safe_print(f"  [ERROR] AI analysis failed: {e}")
     return None
 
 def clean_multi_select(val):
@@ -111,7 +137,7 @@ def clean_multi_select(val):
 def save_to_notion(result, article_data):
     safe_print(f"  [NOTION] Attempting save to database...")
     try:
-        # 重複チェック (Source URLが存在する場合のみ)
+        # 重複チェック
         if "Source URL" in DB_PROPS:
             try:
                 q = notion.databases.query(database_id=DATABASE_ID, filter={"property": "Source URL", "url": {"equals": article_data['link']}})
@@ -122,33 +148,20 @@ def save_to_notion(result, article_data):
 
         props = {}
         # ユーザー指定のプロパティ名に合わせる
-        if "Title" in DB_PROPS: 
-            props["Title"] = {"title": [{"text": {"content": article_data['title'][:100]}}]}
-        elif "Name" in DB_PROPS:
-            props["Name"] = {"title": [{"text": {"content": article_data['title'][:100]}}]}
+        title_val = article_data['title'][:100]
+        if "Title" in DB_PROPS: props["Title"] = {"title": [{"text": {"content": title_val}}]}
+        elif "Name" in DB_PROPS: props["Name"] = {"title": [{"text": {"content": title_val}}]}
             
-        if "Source URL" in DB_PROPS: 
-            props["Source URL"] = {"url": article_data['link']}
+        if "Source URL" in DB_PROPS: props["Source URL"] = {"url": article_data['link']}
+        if "Source Name" in DB_PROPS: props["Source Name"] = {"select": {"name": "RSS Search Collector"}}
+        if "Brand" in DB_PROPS: props["Brand"] = {"multi_select": clean_multi_select(result.get("brand", "Other"))}
+        if "Segment" in DB_PROPS: props["Segment"] = {"multi_select": clean_multi_select(result.get("segment", "Other"))}
+        if "Region" in DB_PROPS: props["Region"] = {"multi_select": clean_multi_select(result.get("region", "Global"))}
             
-        if "Source Name" in DB_PROPS:
-            props["Source Name"] = {"select": {"name": "RSS Search Collector"}}
-            
-        if "Brand" in DB_PROPS:
-            props["Brand"] = {"multi_select": clean_multi_select(result.get("brand", "Other"))}
-            
-        if "Segment" in DB_PROPS:
-            props["Segment"] = {"multi_select": clean_multi_select(result.get("segment", "Other"))}
+        now = datetime.now().isoformat()
+        if "Published Date" in DB_PROPS: props["Published Date"] = {"date": {"start": now}}
+        elif "Date" in DB_PROPS: props["Date"] = {"date": {"start": now}}
 
-        if "Region" in DB_PROPS:
-            props["Region"] = {"multi_select": clean_multi_select(result.get("region", "Global"))}
-            
-        if "Published Date" in DB_PROPS:
-            # RSSの公開日時があれば使う。なければ現在時刻
-            props["Published Date"] = {"date": {"start": datetime.now().isoformat()}}
-        elif "Date" in DB_PROPS:
-            props["Date"] = {"date": {"start": datetime.now().isoformat()}}
-
-        # 要約（ユーザーの一覧にはなかったが、もし存在すれば入れる）
         if "Summary" in DB_PROPS:
             props["Summary"] = {"rich_text": [{"text": {"content": result.get("summary_ja", "")[:2000]}}]}
 
@@ -161,6 +174,7 @@ def save_to_notion(result, article_data):
 
 def main():
     processed_count = 0
+    safe_print("=== Starting Collection ===")
     for feed in RSS_FEEDS:
         try:
             resp = requests.get(feed['url'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=20)
@@ -173,7 +187,8 @@ def main():
                     processed_count += 1
                     if processed_count % 3 == 0: time.sleep(60)
             time.sleep(10)
-        except: pass
+        except Exception as e:
+            safe_print(f"  [ERROR] Loop error: {e}")
     safe_print(f"\n=== Finished. Saved {processed_count} items. ===")
 
 if __name__ == "__main__":
