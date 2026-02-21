@@ -33,7 +33,7 @@ jobs:
     - name: Run news collector
       env:
         NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-        DATABASE_ID: ${{ secrets.DATABASE_ID }}
+        DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: |
         python news_collector.py
