@@ -22,7 +22,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install --force-reinstall --no-cache-dir google-generativeai google-api-core feedparser requests notion_client
+        pip install --force-reinstall --no-cache-dir google-generativeai google-api-core feedparser requests notion-client
         pip install -r requirements.txt
 
     - name: Install Chrome
