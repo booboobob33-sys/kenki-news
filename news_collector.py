@@ -375,8 +375,8 @@ def main():
             if resp.status_code != 200: continue
             entries = feedparser.parse(resp.content).entries
             
-            # Process up to 5 entries per feed to avoid overload
-            for entry in entries[:5]:
+            # Process up to 15 entries per feed to avoid overload
+            for entry in entries[:15]:
                 data = {
                     "title": entry.title, 
                     "link": entry.link, 
