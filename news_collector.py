@@ -243,18 +243,63 @@ def save_to_notion(result, article_data):
     
     if date_col: props[date_col] = {"date": {"start": datetime.now().isoformat()}}
     
-    if summary_col:
-        bullets = result.get("bullet_summary", "").strip()
-        body = result.get("full_body", "").strip()
+    # Remove summary from properties (we will write it to the page body instead)
+    if summary_col in props:
+        del props[summary_col]
+
+    # Construct Page Body (Children)
+    children = []
+    
+    # Summary Section
+    bullets = result.get("bullet_summary", "").strip()
+    if bullets:
+        children.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "【要約】"}}]}
+        })
+        # Try to split bullets by newline or bullet characters
+        bullet_list = [b.strip("- •*") for b in bullets.split("\n") if b.strip()]
+        for b in bullet_list[:3]: # Ensure max 3 lines as requested
+            children.append({
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": b[:2000]}}]}
+            })
+
+    # Body Section
+    body_text = result.get("full_body", "").strip()
+    if body_text:
+        children.append({
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {"rich_text": [{"type": "text", "text": {"content": "【本文引用/翻訳】"}}]}
+        })
         
-        combined_text = f"【要約】\n{bullets}\n\n【本文引用】\n{body}"
-        
-        # 2000字制限の処理
-        if len(combined_text) > 1950:
-            link_note = f"\n\n...（続きはサイトへ）\n{article_data['link']}"
-            combined_text = combined_text[:1900] + link_note
+        # Truncate to 2000 chars as requested
+        display_body = body_text
+        needs_link = False
+        if len(display_body) > 1900:
+            display_body = display_body[:1800] + "..."
+            needs_link = True
             
-        props[summary_col] = {"rich_text": [{"text": {"content": combined_text}}]}
+        children.append({
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {"rich_text": [{"type": "text", "text": {"content": display_body}}]}
+        })
+        
+        if needs_link:
+            children.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [
+                        {"type": "text", "text": {"content": "（続きはサイトへ）\n"}},
+                        {"type": "text", "text": {"content": article_data['link'], "link": {"url": article_data['link']}}}
+                    ]
+                }
+            })
 
     # Attempt save with self-correction retry loop
     max_retries = 5
@@ -269,20 +314,23 @@ def save_to_notion(result, article_data):
                         safe_print("  [SKIP] Duplicate article.")
                         return False
 
-            notion.pages.create(parent={"database_id": DATABASE_ID}, properties=props)
-            safe_print("  [SUCCESS] Saved article.")
+            notion.pages.create(
+                parent={"database_id": DATABASE_ID}, 
+                properties=props,
+                children=children
+            )
+            safe_print("  [SUCCESS] Saved article with content in page body.")
             return True
 
         except Exception as e:
             err_msg = str(e)
-            # Check if error is about a missing property
             match = re.search(r"Property ['\"](.+?)['\"] is not a property", err_msg)
             if match:
                 bad_prop = match.group(1)
                 safe_print(f"  [FIX] Removing non-existent property and retrying: {bad_prop}")
                 if bad_prop in props:
                     del props[bad_prop]
-                    continue # Retry with remaining properties
+                    continue 
             
             safe_print(f"  [ERROR] Notion Save Failed: {err_msg}")
             return False
