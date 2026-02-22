@@ -30,11 +30,17 @@ def safe_print(text):
 def check_env_and_exit_if_empty():
     safe_print(f"--- Environment Diagnostics ---")
     safe_print(f"Python: {sys.version}")
-    safe_print(f"SDK Version (Gemini): {getattr(genai, '__version__', 'Unknown')}")
-    safe_print(f"SDK Version (Notion): {getattr(notion_client, '__version__', 'Obsolete (<0.5.0)')}")
     
+    # Check SDK Versions and Paths
+    try:
+        import google.generativeai as gai
+        import notion_client as nc
+        safe_print(f"Gemini SDK: {getattr(gai, '__version__', 'Unknown')} ({getattr(gai, '__file__', 'No Path')})")
+        safe_print(f"Notion SDK: {getattr(nc, '__version__', 'Unknown')} ({getattr(nc, '__file__', 'No Path')})")
+    except Exception as e:
+        safe_print(f"Error checking SDKs: {e}")
+
     mask = lambda s: s[:4] + "***" if (s and len(s) > 4) else ("EMPTY" if not s else "SHORT")
-    safe_print(f"NOTION_TOKEN: {mask(NOTION_TOKEN)}")
     safe_print(f"DATABASE_ID: {mask(DATABASE_ID)}")
     safe_print(f"GEMINI_API_KEY: {mask(GEMINI_API_KEY)}")
     
@@ -46,29 +52,36 @@ def check_env_and_exit_if_empty():
 check_env_and_exit_if_empty()
 
 # AI Configuration
-genai.configure(api_key=GEMINI_API_KEY)  # Remove transport='rest' to use gRPC
+genai.configure(api_key=GEMINI_API_KEY)
 
 def get_best_model():
-    """Select the most stable Gemini model available."""
+    """Select the most stable Gemini model available with fallback strategies."""
+    safe_print("  [AI] Discovering available models...")
     try:
-        # Get list of models and filter for those supporting content generation
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
         
-        # Priority list (clean names)
-        preferred = ["models/gemini-1.5-flash", "models/gemini-1.5-flash-latest"]
+        safe_print(f"  [AI] Found: {', '.join(available_models)}")
+        
+        # Priority list
+        preferred = ["models/gemini-1.5-flash", "gemini-1.5-flash", "models/gemini-1.5-flash-latest"]
         for p in preferred:
-            if p in available_models: 
-                return genai.GenerativeModel(model_name=p)
+            for am in available_models:
+                if p == am or p.split('/')[-1] == am.split('/')[-1]:
+                    safe_print(f"  [AI] Selected: {am}")
+                    return genai.GenerativeModel(model_name=am)
         
-        # Fallback to the first available gemini-1.5 model if any
-        for m in available_models:
-            if "gemini-1.5" in m:
-                return genai.GenerativeModel(model_name=m)
+        if available_models:
+            safe_print(f"  [AI] No preferred model found. Using first available: {available_models[0]}")
+            return genai.GenerativeModel(model_name=available_models[0])
+            
     except Exception as e:
         safe_print(f"  [WARN] Model discovery failed: {e}")
     
-    # Absolute fallback
-    return genai.GenerativeModel(model_name="gemini-1.5-flash")
+    safe_print("  [AI] Using absolute fallback: models/gemini-1.5-flash")
+    return genai.GenerativeModel(model_name="models/gemini-1.5-flash")
 
 model = get_best_model()
 
@@ -76,8 +89,12 @@ model = get_best_model()
 notion = Client(auth=NOTION_TOKEN)
 
 def get_db_properties():
-    """Fetch database properties to be schema-aware."""
+    """Fetch database properties with robust error handling for SDK variations."""
     try:
+        # Debug methods
+        if hasattr(notion, "databases"):
+            safe_print(f"  [NOTION] Databases methods: {dir(notion.databases)}")
+        
         # 1. Try retrieve database
         db = notion.databases.retrieve(database_id=DATABASE_ID)
         props = list(db.get("properties", {}).keys())
@@ -87,15 +104,15 @@ def get_db_properties():
             
         # 2. Fallback to searching first page if retrieve is empty
         safe_print("  [NOTION] Retrieve returned no properties. Trying search fallback...")
-        # Check if query method exists to avoid AttributeError
-        if hasattr(notion.databases, "query"):
-            res = notion.databases.query(database_id=DATABASE_ID, page_size=1)
+        query_method = getattr(notion.databases, "query", None)
+        if query_method:
+            res = query_method(database_id=DATABASE_ID, page_size=1)
             if res.get("results"):
                 props = list(res["results"][0].get("properties", {}).keys())
                 safe_print(f"  [NOTION] Found properties via search: {', '.join(props)}")
                 return props
         else:
-            safe_print("  [WARN] Notion client version might be too old for .query()")
+            safe_print("  [WARN] notion.databases.query is NOT available in this SDK version.")
             
     except Exception as e:
         safe_print(f"  [WARN] Could not retrieve DB schema: {e}")
