@@ -155,25 +155,44 @@ safe_print(f"  [NOTION] Final Mapped columns: " + ", ".join([f"{k}->{v}" for k,v
 
 # ニュースソース設定
 RSS_FEEDS = [
-    {"name": "Googleニュース (建設機械)", "url": "https://news.google.com/rss/search?q=%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
-    {"name": "Googleニュース (鉱山機械)", "url": "https://news.google.com/rss/search?q=%E9%89%B1%E5%B1%B1%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
-    {"name": "Googleニュース (コマツ/Komatsu)", "url": "https://news.google.com/rss/search?q=Komatsu+OR+%E3%82%B3%E3%83%9E%E3%83%84&hl=ja&gl=JP&ceid=JP:ja"},
-    {"name": "Googleニュース (日立建機/Hitachi CM)", "url": "https://news.google.com/rss/search?q=Hitachi+Construction+Machinery+OR+%E6%97%A5%E7%AB%8B%E5%BB%BA%E6%A9%9F&hl=ja&gl=JP&ceid=JP:ja"},
-    {"name": "KHL Construction News", "url": "https://news.google.com/rss/search?q=site:khl.com+International+Construction&hl=en-US&gl=US&ceid=US:en"}
+    # --- Specialized Industry Media ---
+    {"name": "Mining.com (Mining Machine)", "url": "https://www.mining.com/tag/mining-machinery/feed/"},
+    {"name": "Construction Equipment Guide", "url": "https://www.constructionequipmentguide.com/rss/"},
+    {"name": "KHL Construction News", "url": "https://news.google.com/rss/search?q=site:khl.com+International+Construction&hl=en-US&gl=US&ceid=US:en"},
+    
+    # --- Major 14 Manufacturers (Targeted Searches) ---
+    {"name": "CAT (Caterpillar)", "url": "https://news.google.com/rss/search?q=Caterpillar+Construction+Mining+News&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Komatsu (Global)", "url": "https://news.google.com/rss/search?q=Komatsu+Mining+Construction+News&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "John Deere (Construction)", "url": "https://news.google.com/rss/search?q=John+Deere+Construction+News&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "XCMG / Sany News", "url": "https://news.google.com/rss/search?q=%22XCMG%22+OR+%22Sany+Group%22+Construction&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Volvo CE / Liebherr", "url": "https://news.google.com/rss/search?q=%22Volvo+CE%22+OR+%22Liebherr%22+Machinery&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Hitachi CM / Bobcat", "url": "https://news.google.com/rss/search?q=%22Hitachi+Construction+Machinery%22+OR+%22Bobcat%22+News&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "Zoomlion / Kubota News", "url": "https://news.google.com/rss/search?q=%22Zoomlion%22+OR+%22Kubota%22+Construction&hl=en-US&gl=US&ceid=US:en"},
+    {"name": "JCB / Kobelco / Sumitomo", "url": "https://news.google.com/rss/search?q=%22JCB%22+OR+%22Kobelco%22+OR+%22Sumitomo+Construction+Machinery%22&hl=en-US&gl=US&ceid=US:en"},
+
+    # --- Japanese Media & Specialized Keywords ---
+    {"name": "Googleニュース (建機/鉱山機械)", "url": "https://news.google.com/rss/search?q=%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0+OR+%E9%89%B1%E5%B1%B1%E6%A9%9F%E6%A2%B0&hl=ja&gl=JP&ceid=JP:ja"},
+    {"name": "日経ニュース (重機/自動化)", "url": "https://news.google.com/rss/search?q=site:nikkei.com+%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0+OR+%E8%87%AA%E5%8B%95%E5%8C%96&hl=ja&gl=JP&ceid=JP:ja"},
+    {"name": "Googleニュース (脱炭素/電動建機)", "url": "https://news.google.com/rss/search?q=%E9%9B%BB%E5%8B%95%E5%BB%BA%E8%A8%AD%E6%A9%9F%E6%A2%B0+OR+%E8%84%B1%E7%82%AD%E7%B4%A0+%E5%BB%BA%E6%A9%9F&hl=ja&gl=JP&ceid=JP:ja"}
 ]
 
 def analyze_article_with_gemini(article_data, page_text=""):
     safe_print(f"  [AI] Analyzing: {article_data['title'][:40]}...")
     
-    # Use full page text if available for better summary/transcription
-    content_to_analyze = page_text if len(page_text) > 200 else article_data['summary']
+    # 徹底的にタグ除去したテキストを作成
+    raw_content = page_text if len(page_text) > 200 else article_data['summary']
+    clean_content = re.sub(r'<[^>]+>', '', raw_content) # 念押し
+    clean_content = clean_content.replace("&nbsp;", " ").replace("&quot;", "\"").strip()
 
     prompt = f"""あなたは建設・鉱山機械業界の専門家です。
 以下の記事内容を分析し、指定のJSON形式で日本語で出力してください。
 
+【重要ルール】
+・HTMLタグ（<a>等）、生のURL、[URL]のようなブラケットメタデータは絶対に出力しないでください。
+・きれいな日本語のみで出力してください。
+
 【タイトル】: {article_data['title']}
-【URL】: {article_data['link']}
-【記事内容】: {content_to_analyze[:5000]}  # 制限のため5000字まで
+【記事内容】: {clean_content[:5000]}
 
 【出力形式】
 関連がない場合は 'null' とだけ出力。
@@ -182,8 +201,8 @@ def analyze_article_with_gemini(article_data, page_text=""):
   "brand": "メーカー名",
   "segment": "製品区分",
   "region": "地域（Japan, Global等）",
-  "bullet_summary": "3行以内の箇条書き日本語要約",
-  "full_body": "本文の転記または翻訳（日本語）"
+  "bullet_summary": "3行以内の簡潔な箇条書き日本語要約",
+  "full_body": "本文の転記または翻訳（HTML/URLを一切含まない日本語）"
 }}"""
 
     try:
@@ -197,7 +216,10 @@ def analyze_article_with_gemini(article_data, page_text=""):
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             res = json.loads(match.group())
-            safe_print(f"  [MATCH] Summary and Body generated.")
+            # AIがURLなどを混ぜてきた場合の保険
+            if "full_body" in res:
+                res["full_body"] = re.sub(r'<[^>]+>', '', str(res["full_body"]))
+            safe_print(f"  [MATCH] Clean content generated.")
             return res
         else:
             safe_print(f"  [WARN] AI returned no JSON: {text[:50]}")
@@ -258,9 +280,8 @@ def save_to_notion(result, article_data):
             "type": "heading_2",
             "heading_2": {"rich_text": [{"type": "text", "text": {"content": "【要約】"}}]}
         })
-        # Try to split bullets by newline or bullet characters
         bullet_list = [b.strip("- •*") for b in bullets.split("\n") if b.strip()]
-        for b in bullet_list[:3]: # Ensure max 3 lines as requested
+        for b in bullet_list[:3]:
             children.append({
                 "object": "block",
                 "type": "bulleted_list_item",
@@ -276,7 +297,6 @@ def save_to_notion(result, article_data):
             "heading_2": {"rich_text": [{"type": "text", "text": {"content": "【本文引用/翻訳】"}}]}
         })
         
-        # Truncate to 2000 chars as requested
         display_body = body_text
         needs_link = False
         if len(display_body) > 1900:
@@ -301,11 +321,10 @@ def save_to_notion(result, article_data):
                 }
             })
 
-    # Attempt save with self-correction retry loop
-    max_retries = 5
+    # Attempt save with retry loop
+    max_retries = 3
     for attempt in range(max_retries):
         try:
-            # Duplicate check (only on first successful retry attempt if URL column exists)
             if url_col in props and attempt == 0:
                 query_method = getattr(notion.databases, "query", None)
                 if query_method:
@@ -314,12 +333,8 @@ def save_to_notion(result, article_data):
                         safe_print("  [SKIP] Duplicate article.")
                         return False
 
-            notion.pages.create(
-                parent={"database_id": DATABASE_ID}, 
-                properties=props,
-                children=children
-            )
-            safe_print("  [SUCCESS] Saved article with content in page body.")
+            notion.pages.create(parent={"database_id": DATABASE_ID}, properties=props, children=children)
+            safe_print("  [SUCCESS] Saved article with clean content.")
             return True
 
         except Exception as e:
@@ -327,14 +342,12 @@ def save_to_notion(result, article_data):
             match = re.search(r"Property ['\"](.+?)['\"] is not a property", err_msg)
             if match:
                 bad_prop = match.group(1)
-                safe_print(f"  [FIX] Removing non-existent property and retrying: {bad_prop}")
+                safe_print(f"  [FIX] Removing {bad_prop} and retrying...")
                 if bad_prop in props:
                     del props[bad_prop]
                     continue 
-            
             safe_print(f"  [ERROR] Notion Save Failed: {err_msg}")
             return False
-    
     return False
 
 def get_page_text(url):
@@ -345,11 +358,11 @@ def get_page_text(url):
         if resp.status_code != 200: return ""
         soup = BeautifulSoup(resp.content, 'html.parser')
         
-        # Remove script and style elements
         for s in soup(["script", "style", "nav", "header", "footer"]):
             s.decompose()
             
-        return " ".join(soup.stripped_strings)[:10000] # Limit to 10k chars
+        text = soup.get_text()
+        return " ".join(text.split())[:10000]
     except:
         return ""
 
