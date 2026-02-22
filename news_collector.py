@@ -88,26 +88,62 @@ model = get_best_model()
 # Notion Client and Schema Discovery
 notion = Client(auth=NOTION_TOKEN)
 
-# Standard properties seen in user's database
-EXPECTED_PROPS = ["Title", "Name", "Source URL", "Published Date", "Date", "Brand", "Region", "Segment", "Summary"]
-
 def get_db_properties():
-    """Fetch database properties with robust error handling for SDK variations."""
+    """Fetch database properties with deep diagnostics and literal mapping."""
     try:
-        # 1. Try retrieve database
+        # 1. Try retrieve database meta
+        safe_print(f"  [NOTION] Fetching database metadata for ID: {DATABASE_ID[:8]}...")
         db = notion.databases.retrieve(database_id=DATABASE_ID)
-        props = list(db.get("properties", {}).keys())
-        if props:
-            safe_print(f"  [NOTION] Available properties: {', '.join(props)}")
-            return props
+        
+        # Log properties found for debugging (very helpful if mismatches occur)
+        all_found = list(db.get("properties", {}).keys())
+        if all_found:
+            safe_print(f"  [NOTION] Found actual properties in DB: {', '.join(all_found)}")
+            # Log full titles for Published Date candidates
+            for p in all_found:
+                if "Date" in p or "日付" in p:
+                    safe_print(f"  [DEBUG] Found Date candidate: {p}")
+            return all_found
+        else:
+            safe_print(f"  [WARN] Notion API returned no properties for this DB ID.")
             
     except Exception as e:
-        safe_print(f"  [WARN] Could not retrieve DB schema: {e}")
+        safe_print(f"  [WARN] Could not retrieve DB schema via API: {e}")
     
-    safe_print(f"  [NOTION] Using standard property fallbacks.")
-    return EXPECTED_PROPS
+    return []
 
-DB_PROPS = get_db_properties()
+# Fetch actual property list once at start
+ACTUAL_DB_PROPS = get_db_properties()
+
+def get_prop_name(candidates):
+    """Find the best matching property name from the actual DB columns."""
+    # 1. Try exact match
+    for c in candidates:
+        if c in ACTUAL_DB_PROPS: return c
+    
+    # 2. Try partial match (case-insensitive, ignoring spaces/brackets)
+    def simplify(s): return re.sub(r'[^a-zA-Z0-9\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]', '', str(s)).lower()
+    
+    sc_list = [simplify(c) for c in candidates]
+    for act in ACTUAL_DB_PROPS:
+        sa = simplify(act)
+        for sc in sc_list:
+            if sc in sa or sa in sc:
+                return act
+    return None
+
+# Mapping concepts to actual column names
+P_MAP = {
+    "title": get_prop_name(["Title", "Name", "タイトル", "Name (名称)"]),
+    "url": get_prop_name(["Source URL", "URL", "リンク", "ソースURL"]),
+    "date": get_prop_name(["Published Date", "Date", "記事日付", "日付"]),
+    "brand": get_prop_name(["Brand", "ブランド", "メーカー"]),
+    "segment": get_prop_name(["Segment", "製品区分", "セグメント"]),
+    "region": get_prop_name(["Region", "地域", "エリア"]),
+    "summary": get_prop_name(["Summary", "要約", "日本語要約", "概要"])
+}
+
+safe_print(f"  [NOTION] Mapped column names: " + ", ".join([f"{k}->{v}" for k,v in P_MAP.items() if v]))
 
 # ニュースソース設定
 RSS_FEEDS = [
@@ -162,13 +198,13 @@ def clean_multi_select(val):
 def save_to_notion(result, article_data):
     safe_print(f"  [NOTION] Attempting save to database...")
     try:
-        # 重複チェック
-        if "Source URL" in DB_PROPS:
+        # 重複チェック (実際のカラム名を使用)
+        url_col = P_MAP["url"]
+        if url_col:
             try:
-                # Check if query method exists to avoid AttributeError in some environments
                 query_method = getattr(notion.databases, "query", None)
                 if query_method:
-                    q = query_method(database_id=DATABASE_ID, filter={"property": "Source URL", "url": {"equals": article_data['link']}})
+                    q = query_method(database_id=DATABASE_ID, filter={"property": url_col, "url": {"equals": article_data['link']}})
                     if q["results"]:
                         safe_print("  [SKIP] Duplicate article.")
                         return False
@@ -177,29 +213,41 @@ def save_to_notion(result, article_data):
         props = {}
         # 必須プロパティ（タイトルとURL）
         title_val = article_data['title'][:100]
-        if "Title" in DB_PROPS: props["Title"] = {"title": [{"text": {"content": title_val}}]}
-        elif "Name" in DB_PROPS: props["Name"] = {"title": [{"text": {"content": title_val}}]}
+        if P_MAP["title"]: props[P_MAP["title"]] = {"title": [{"text": {"content": title_val}}]}
             
-        if "Source URL" in DB_PROPS: props["Source URL"] = {"url": article_data['link']}
-        if "Source Name" in DB_PROPS: props["Source Name"] = {"select": {"name": "RSS Search Collector"}}
+        if P_MAP["url"]: props[P_MAP["url"]] = {"url": article_data['link']}
         
-        # AI解析プロパティ（あれば入れる、なければ空にする）
+        # Source Name (選択。存在チェックは簡易的に行うが、基本Title/URLがあれば書き込めるはず)
+        if "Source Name" in ACTUAL_DB_PROPS: 
+             props["Source Name"] = {"select": {"name": "RSS Search Collector"}}
+        
+        # AI解析プロパティ (P_MAPで解決できた場合のみ追加)
         brand_tags = clean_multi_select(result.get("brand"))
-        if brand_tags and "Brand" in DB_PROPS: props["Brand"] = {"multi_select": brand_tags}
+        if brand_tags and P_MAP["brand"]: 
+            props[P_MAP["brand"]] = {"multi_select": brand_tags}
         
         segment_tags = clean_multi_select(result.get("segment"))
-        if segment_tags and "Segment" in DB_PROPS: props["Segment"] = {"multi_select": segment_tags}
+        if segment_tags and P_MAP["segment"]: 
+            props[P_MAP["segment"]] = {"multi_select": segment_tags}
         
         region_tags = clean_multi_select(result.get("region"))
-        if region_tags and "Region" in DB_PROPS: props["Region"] = {"multi_select": region_tags}
+        if region_tags and P_MAP["region"]: 
+            props[P_MAP["region"]] = {"multi_select": region_tags}
             
+        # 日付処理
         now = datetime.now().isoformat()
-        if "Published Date" in DB_PROPS: props["Published Date"] = {"date": {"start": now}}
-        elif "Date" in DB_PROPS: props["Date"] = {"date": {"start": now}}
+        if P_MAP["date"]: 
+            props[P_MAP["date"]] = {"date": {"start": now}}
 
-        if "Summary" in DB_PROPS:
+        # 要約
+        if P_MAP["summary"]:
             summary_text = result.get("summary_ja") or article_data.get("summary", "")
-            props["Summary"] = {"rich_text": [{"text": {"content": str(summary_text)[:2000]}}]}
+            props[P_MAP["summary"]] = {"rich_text": [{"text": {"content": str(summary_text)[:2000]}}]}
+
+        # 作成実行
+        if not props:
+            safe_print("  [ERROR] No valid properties to save. Please check column names.")
+            return False
 
         notion.pages.create(parent={"database_id": DATABASE_ID}, properties=props)
         safe_print("  [SUCCESS] Saved article.")
