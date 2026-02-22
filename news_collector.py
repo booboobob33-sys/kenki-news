@@ -88,13 +88,12 @@ model = get_best_model()
 # Notion Client and Schema Discovery
 notion = Client(auth=NOTION_TOKEN)
 
+# Standard properties seen in user's database
+EXPECTED_PROPS = ["Title", "Name", "Source URL", "Published Date", "Date", "Brand", "Region", "Segment", "Summary"]
+
 def get_db_properties():
     """Fetch database properties with robust error handling for SDK variations."""
     try:
-        # Debug methods
-        if hasattr(notion, "databases"):
-            safe_print(f"  [NOTION] Databases methods: {dir(notion.databases)}")
-        
         # 1. Try retrieve database
         db = notion.databases.retrieve(database_id=DATABASE_ID)
         props = list(db.get("properties", {}).keys())
@@ -102,21 +101,11 @@ def get_db_properties():
             safe_print(f"  [NOTION] Available properties: {', '.join(props)}")
             return props
             
-        # 2. Fallback to searching first page if retrieve is empty
-        safe_print("  [NOTION] Retrieve returned no properties. Trying search fallback...")
-        query_method = getattr(notion.databases, "query", None)
-        if query_method:
-            res = query_method(database_id=DATABASE_ID, page_size=1)
-            if res.get("results"):
-                props = list(res["results"][0].get("properties", {}).keys())
-                safe_print(f"  [NOTION] Found properties via search: {', '.join(props)}")
-                return props
-        else:
-            safe_print("  [WARN] notion.databases.query is NOT available in this SDK version.")
-            
     except Exception as e:
         safe_print(f"  [WARN] Could not retrieve DB schema: {e}")
-    return []
+    
+    safe_print(f"  [NOTION] Using standard property fallbacks.")
+    return EXPECTED_PROPS
 
 DB_PROPS = get_db_properties()
 
@@ -164,7 +153,9 @@ def analyze_article_with_gemini(article_data):
     return None
 
 def clean_multi_select(val):
-    if not val: return [{"name": "Other"}]
+    """Clean and format multi-select values, returning empty list if unknown."""
+    if not val or str(val).lower() in ["none", "不明", "other"]: 
+        return []
     parts = [p.strip() for p in str(val).replace("、", ",").split(",")]
     return [{"name": p} for p in parts if p]
 
@@ -174,30 +165,41 @@ def save_to_notion(result, article_data):
         # 重複チェック
         if "Source URL" in DB_PROPS:
             try:
-                q = notion.databases.query(database_id=DATABASE_ID, filter={"property": "Source URL", "url": {"equals": article_data['link']}})
-                if q["results"]:
-                    safe_print("  [SKIP] Duplicate article.")
-                    return False
+                # Check if query method exists to avoid AttributeError in some environments
+                query_method = getattr(notion.databases, "query", None)
+                if query_method:
+                    q = query_method(database_id=DATABASE_ID, filter={"property": "Source URL", "url": {"equals": article_data['link']}})
+                    if q["results"]:
+                        safe_print("  [SKIP] Duplicate article.")
+                        return False
             except: pass
 
         props = {}
-        # ユーザー指定のプロパティ名に合わせる
+        # 必須プロパティ（タイトルとURL）
         title_val = article_data['title'][:100]
         if "Title" in DB_PROPS: props["Title"] = {"title": [{"text": {"content": title_val}}]}
         elif "Name" in DB_PROPS: props["Name"] = {"title": [{"text": {"content": title_val}}]}
             
         if "Source URL" in DB_PROPS: props["Source URL"] = {"url": article_data['link']}
         if "Source Name" in DB_PROPS: props["Source Name"] = {"select": {"name": "RSS Search Collector"}}
-        if "Brand" in DB_PROPS: props["Brand"] = {"multi_select": clean_multi_select(result.get("brand", "Other"))}
-        if "Segment" in DB_PROPS: props["Segment"] = {"multi_select": clean_multi_select(result.get("segment", "Other"))}
-        if "Region" in DB_PROPS: props["Region"] = {"multi_select": clean_multi_select(result.get("region", "Global"))}
+        
+        # AI解析プロパティ（あれば入れる、なければ空にする）
+        brand_tags = clean_multi_select(result.get("brand"))
+        if brand_tags and "Brand" in DB_PROPS: props["Brand"] = {"multi_select": brand_tags}
+        
+        segment_tags = clean_multi_select(result.get("segment"))
+        if segment_tags and "Segment" in DB_PROPS: props["Segment"] = {"multi_select": segment_tags}
+        
+        region_tags = clean_multi_select(result.get("region"))
+        if region_tags and "Region" in DB_PROPS: props["Region"] = {"multi_select": region_tags}
             
         now = datetime.now().isoformat()
         if "Published Date" in DB_PROPS: props["Published Date"] = {"date": {"start": now}}
         elif "Date" in DB_PROPS: props["Date"] = {"date": {"start": now}}
 
         if "Summary" in DB_PROPS:
-            props["Summary"] = {"rich_text": [{"text": {"content": result.get("summary_ja", "")[:2000]}}]}
+            summary_text = result.get("summary_ja") or article_data.get("summary", "")
+            props["Summary"] = {"rich_text": [{"text": {"content": str(summary_text)[:2000]}}]}
 
         notion.pages.create(parent={"database_id": DATABASE_ID}, properties=props)
         safe_print("  [SUCCESS] Saved article.")
@@ -223,7 +225,7 @@ def main():
             time.sleep(10)
         except Exception as e:
             safe_print(f"  [ERROR] Loop error: {e}")
-    safe_print(f"\n=== Finished. Saved {processed_count} items. ===")
+    safe_print(f"\n=== Finished. Successfully saved {processed_count} news items to Notion. ===")
 
 if __name__ == "__main__":
     main()
