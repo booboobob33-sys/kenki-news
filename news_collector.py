@@ -46,15 +46,28 @@ def check_env_and_exit_if_empty():
 check_env_and_exit_if_empty()
 
 # AI Configuration
-genai.configure(api_key=GEMINI_API_KEY, transport='rest')
+genai.configure(api_key=GEMINI_API_KEY)  # Remove transport='rest' to use gRPC
 
 def get_best_model():
+    """Select the most stable Gemini model available."""
     try:
-        models = [m.name for m in genai.list_models()]
+        # Get list of models and filter for those supporting content generation
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # Priority list (clean names)
         preferred = ["models/gemini-1.5-flash", "models/gemini-1.5-flash-latest"]
         for p in preferred:
-            if p in models: return genai.GenerativeModel(model_name=p)
-    except: pass
+            if p in available_models: 
+                return genai.GenerativeModel(model_name=p)
+        
+        # Fallback to the first available gemini-1.5 model if any
+        for m in available_models:
+            if "gemini-1.5" in m:
+                return genai.GenerativeModel(model_name=m)
+    except Exception as e:
+        safe_print(f"  [WARN] Model discovery failed: {e}")
+    
+    # Absolute fallback
     return genai.GenerativeModel(model_name="gemini-1.5-flash")
 
 model = get_best_model()
@@ -74,11 +87,15 @@ def get_db_properties():
             
         # 2. Fallback to searching first page if retrieve is empty
         safe_print("  [NOTION] Retrieve returned no properties. Trying search fallback...")
-        res = notion.databases.query(database_id=DATABASE_ID, page_size=1)
-        if res.get("results"):
-            props = list(res["results"][0].get("properties", {}).keys())
-            safe_print(f"  [NOTION] Found properties via search: {', '.join(props)}")
-            return props
+        # Check if query method exists to avoid AttributeError
+        if hasattr(notion.databases, "query"):
+            res = notion.databases.query(database_id=DATABASE_ID, page_size=1)
+            if res.get("results"):
+                props = list(res["results"][0].get("properties", {}).keys())
+                safe_print(f"  [NOTION] Found properties via search: {', '.join(props)}")
+                return props
+        else:
+            safe_print("  [WARN] Notion client version might be too old for .query()")
             
     except Exception as e:
         safe_print(f"  [WARN] Could not retrieve DB schema: {e}")
