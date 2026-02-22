@@ -190,9 +190,10 @@ def analyze_article_with_gemini(article_data, page_text=""):
 【重要ルール】
 ・HTMLタグ（<a>等）、生のURL、[URL]のようなブラケットメタデータは絶対に出力しないでください。
 ・きれいな日本語のみで出力してください。
+・「full_body」は、2000文字以内であれば可能な限り原文のまま（英語なら翻訳）としてください。2000文字を超える場合は、重要な部分を優先して構成し、全体で2000文字を超えないようにしてください。
 
 【タイトル】: {article_data['title']}
-【記事内容】: {clean_content[:5000]}
+【記事内容】: {clean_content[:15000]}
 
 【出力形式】
 関連がない場合は 'null' とだけ出力。
@@ -202,7 +203,7 @@ def analyze_article_with_gemini(article_data, page_text=""):
   "segment": "製品区分",
   "region": "地域（Japan, Global等）",
   "bullet_summary": "3行以内の簡潔な箇条書き日本語要約",
-  "full_body": "本文の転記または翻訳（HTML/URLを一切含まない日本語）"
+  "full_body": "原文のままの転記、または翻訳（HTML/URLを一切含まない。2000文字以内）"
 }}"""
 
     try:
@@ -297,11 +298,14 @@ def save_to_notion(result, article_data):
             "heading_2": {"rich_text": [{"type": "text", "text": {"content": "【本文引用/翻訳】"}}]}
         })
         
+        # Notion paragraph blocks have a 2000 character limit.
+        # We enforce a strict limit and add a link if truncated.
         display_body = body_text
-        needs_link = False
-        if len(display_body) > 1900:
-            display_body = display_body[:1800] + "..."
-            needs_link = True
+        is_truncated = False
+        
+        if len(display_body) > 2000:
+            display_body = display_body[:1950] + "..."
+            is_truncated = True
             
         children.append({
             "object": "block",
@@ -309,17 +313,18 @@ def save_to_notion(result, article_data):
             "paragraph": {"rich_text": [{"type": "text", "text": {"content": display_body}}]}
         })
         
-        if needs_link:
-            children.append({
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [
-                        {"type": "text", "text": {"content": "（続きはサイトへ）\n"}},
-                        {"type": "text", "text": {"content": article_data['link'], "link": {"url": article_data['link']}}}
-                    ]
-                }
-            })
+        # Always provide the original link for convenience or if truncated
+        children.append({
+            "object": "block",
+            "type": "paragraph",
+            "paragraph": {
+                "rich_text": [
+                    {"type": "text", "text": {"content": "（続き・詳細はソース元へ： " if is_truncated else "（ソース元： "}},
+                    {"type": "text", "text": {"content": article_data['link'], "link": {"url": article_data['link']}}},
+                    {"type": "text", "text": {"content": " ）"}}
+                ]
+            }
+        })
 
     # Attempt save with retry loop
     max_retries = 3
