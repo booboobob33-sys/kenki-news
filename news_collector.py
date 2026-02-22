@@ -162,21 +162,30 @@ RSS_FEEDS = [
     {"name": "KHL Construction News", "url": "https://news.google.com/rss/search?q=site:khl.com+International+Construction&hl=en-US&gl=US&ceid=US:en"}
 ]
 
-def analyze_article_with_gemini(article_data):
+def analyze_article_with_gemini(article_data, page_text=""):
     safe_print(f"  [AI] Analyzing: {article_data['title'][:40]}...")
-    prompt = f"""あなたは建設機械業界の専門家です。
-以下のニュースが建設・鉱山・農林機械、またはそのメーカーに関連するか判定してください。
+    
+    # Use full page text if available for better summary/transcription
+    content_to_analyze = page_text if len(page_text) > 200 else article_data['summary']
+
+    prompt = f"""あなたは建設・鉱山機械業界の専門家です。
+以下の記事内容を分析し、指定のJSON形式で日本語で出力してください。
 
 【タイトル】: {article_data['title']}
-【概要】: {article_data['summary']}
+【URL】: {article_data['link']}
+【記事内容】: {content_to_analyze[:5000]}  # 制限のため5000字まで
 
-【出力形式】関連あれば以下のJSON、なければ 'null' とだけ出力してください。
+【出力形式】
+関連がない場合は 'null' とだけ出力。
+関連がある場合は以下のJSONのみを出力：
 {{
   "brand": "メーカー名",
   "segment": "製品区分",
-  "region": "地域（Japan, Global, China等）",
-  "summary_ja": "日本語要約（200字）"
+  "region": "地域（Japan, Global等）",
+  "bullet_summary": "3行以内の箇条書き日本語要約",
+  "full_body": "本文の転記または翻訳（日本語）"
 }}"""
+
     try:
         response = model.generate_content(prompt)
         text = response.text.strip()
@@ -188,7 +197,7 @@ def analyze_article_with_gemini(article_data):
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
             res = json.loads(match.group())
-            safe_print(f"  [MATCH] Brand: {res.get('brand')}, Region: {res.get('region')}")
+            safe_print(f"  [MATCH] Summary and Body generated.")
             return res
         else:
             safe_print(f"  [WARN] AI returned no JSON: {text[:50]}")
@@ -235,8 +244,17 @@ def save_to_notion(result, article_data):
     if date_col: props[date_col] = {"date": {"start": datetime.now().isoformat()}}
     
     if summary_col:
-        text = result.get("summary_ja") or article_data.get("summary", "")
-        props[summary_col] = {"rich_text": [{"text": {"content": str(text)[:2000]}}]}
+        bullets = result.get("bullet_summary", "").strip()
+        body = result.get("full_body", "").strip()
+        
+        combined_text = f"【要約】\n{bullets}\n\n【本文引用】\n{body}"
+        
+        # 2000字制限の処理
+        if len(combined_text) > 1950:
+            link_note = f"\n\n...（続きはサイトへ）\n{article_data['link']}"
+            combined_text = combined_text[:1900] + link_note
+            
+        props[summary_col] = {"rich_text": [{"text": {"content": combined_text}}]}
 
     # Attempt save with self-correction retry loop
     max_retries = 5
@@ -271,6 +289,22 @@ def save_to_notion(result, article_data):
     
     return False
 
+def get_page_text(url):
+    """Fetch and extract clean text from a URL."""
+    try:
+        from bs4 import BeautifulSoup
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+        if resp.status_code != 200: return ""
+        soup = BeautifulSoup(resp.content, 'html.parser')
+        
+        # Remove script and style elements
+        for s in soup(["script", "style", "nav", "header", "footer"]):
+            s.decompose()
+            
+        return " ".join(soup.stripped_strings)[:10000] # Limit to 10k chars
+    except:
+        return ""
+
 def main():
     processed_count = 0
     safe_print("=== Starting Collection ===")
@@ -279,13 +313,26 @@ def main():
             resp = requests.get(feed['url'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=20)
             if resp.status_code != 200: continue
             entries = feedparser.parse(resp.content).entries
-            if entries:
-                data = {"title": entries[0].title, "link": entries[0].link, "summary": entries[0].get("summary", entries[0].get("description", ""))}
-                res = analyze_article_with_gemini(data)
+            
+            # Process up to 5 entries per feed to avoid overload
+            for entry in entries[:5]:
+                data = {
+                    "title": entry.title, 
+                    "link": entry.link, 
+                    "summary": entry.get("summary", entry.get("description", ""))
+                }
+                
+                # Fetch full text
+                page_text = get_page_text(data['link'])
+                
+                res = analyze_article_with_gemini(data, page_text)
                 if res and save_to_notion(res, data):
                     processed_count += 1
                     if processed_count % 3 == 0: time.sleep(60)
-            time.sleep(10)
+                
+                time.sleep(15) # Between articles
+            
+            time.sleep(5) # Between feeds
         except Exception as e:
             safe_print(f"  [ERROR] Loop error: {e}")
     safe_print(f"\n=== Finished. Successfully saved {processed_count} news items to Notion. ===")
