@@ -92,7 +92,7 @@ def get_db_properties():
     """Fetch database properties with deep diagnostics and literal mapping."""
     try:
         # 1. Try retrieve database meta
-        safe_print(f"  [NOTION] Fetching database metadata for ID: {DATABASE_ID[:8]}...")
+        safe_print(f"  [NOTION] Fetching database metadata for ID: {str(DATABASE_ID)[:8]}...")
         db = notion.databases.retrieve(database_id=DATABASE_ID)
         
         # Log properties found for debugging (very helpful if mismatches occur)
@@ -115,7 +115,16 @@ def get_db_properties():
 # Fetch actual property list once at start
 ACTUAL_DB_PROPS = get_db_properties()
 
-def get_prop_name(candidates):
+# --- Zero-Trust Fallback ---
+# If API failed to return any properties, we use a hardcoded list of "best guess" verified names.
+if not ACTUAL_DB_PROPS:
+    safe_print(f"  [NOTION] API returned no properties. Using hardcoded backup for column names.")
+    ACTUAL_DB_PROPS = [
+        "Title", "Name", "Source URL", "Published Date （記事日付）", 
+        "Brand", "Region", "Segment", "Summary", "Date"
+    ]
+
+def get_prop_name(candidates, default_if_empty=None):
     """Find the best matching property name from the actual DB columns."""
     # 1. Try exact match
     for c in candidates:
@@ -130,20 +139,22 @@ def get_prop_name(candidates):
         for sc in sc_list:
             if sc in sa or sa in sc:
                 return act
-    return None
+    
+    # 3. Fallback to default if explicitly requested
+    return default_if_empty
 
 # Mapping concepts to actual column names
 P_MAP = {
-    "title": get_prop_name(["Title", "Name", "タイトル", "Name (名称)"]),
-    "url": get_prop_name(["Source URL", "URL", "リンク", "ソースURL"]),
-    "date": get_prop_name(["Published Date", "Date", "記事日付", "日付"]),
-    "brand": get_prop_name(["Brand", "ブランド", "メーカー"]),
-    "segment": get_prop_name(["Segment", "製品区分", "セグメント"]),
-    "region": get_prop_name(["Region", "地域", "エリア"]),
-    "summary": get_prop_name(["Summary", "要約", "日本語要約", "概要"])
+    "title": get_prop_name(["Title", "Name", "タイトル"], default_if_empty="Title"),
+    "url": get_prop_name(["Source URL", "URL", "リンク"], default_if_empty="Source URL"),
+    "date": get_prop_name(["Published Date （記事日付）", "Published Date", "Date", "日付"], default_if_empty="Published Date （記事日付）"),
+    "brand": get_prop_name(["Brand", "ブランド"]),
+    "segment": get_prop_name(["Segment", "製品区分"]),
+    "region": get_prop_name(["Region", "地域"]),
+    "summary": get_prop_name(["Summary", "要約", "概要"])
 }
 
-safe_print(f"  [NOTION] Mapped column names: " + ", ".join([f"{k}->{v}" for k,v in P_MAP.items() if v]))
+safe_print(f"  [NOTION] Final Mapped columns: " + ", ".join([f"{k}->{v}" for k,v in P_MAP.items() if v]))
 
 # ニュースソース設定
 RSS_FEEDS = [
