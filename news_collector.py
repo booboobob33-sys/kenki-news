@@ -3,7 +3,7 @@ import feedparser
 import google.generativeai as genai
 from notion_client import Client
 import notion_client
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import time
 import json
 import os
@@ -385,27 +385,43 @@ def get_page_text(url):
 
 def main():
     processed_count = 0
+    total_limit = 15
     safe_print("=== Starting Collection ===")
+    
+    # 24時間前の時刻を取得 (UTC)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=24)
+    
     for feed in RSS_FEEDS:
+        if processed_count >= total_limit:
+            break
+            
         try:
             resp = requests.get(feed['url'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=20)
             if resp.status_code != 200: continue
             entries = feedparser.parse(resp.content).entries
             
-            # Process up to 15 entries per feed to avoid overload
-            for entry in entries[:15]:
-                # 記事の公開日時を取得 (ISO 8601形式)
+            for entry in entries:
+                if processed_count >= total_limit:
+                    break
+                
+                # 記事の公開日時を取得して24時間以内かチェック
                 pub_parsed = entry.get("published_parsed")
                 if pub_parsed:
-                    entry_date = datetime(*pub_parsed[:6]).isoformat()
+                    # feedparserのpublished_parsedは通常UTC
+                    entry_dt = datetime(*pub_parsed[:6]).replace(tzinfo=timezone.utc)
+                    if entry_dt < cutoff:
+                        continue # 24時間以上前ならスキップ
+                    entry_date_str = entry_dt.isoformat()
                 else:
-                    entry_date = datetime.now().isoformat()
+                    # 日付が取れない場合は現在の時刻とする（またはスキップする選択肢もあるが、現行に合わせる）
+                    entry_date_str = datetime.now().isoformat()
 
                 data = {
                     "title": entry.title, 
                     "link": entry.link, 
                     "summary": entry.get("summary", entry.get("description", "")),
-                    "date": entry_date
+                    "date": entry_date_str
                 }
                 
                 # Fetch full text
