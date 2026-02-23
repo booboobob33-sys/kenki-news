@@ -188,9 +188,11 @@ def analyze_article_with_gemini(article_data, page_text=""):
 以下の記事内容を分析し、指定のJSON形式で日本語で出力してください。
 
 【重要ルール】
+・「full_body」は、必ず記事の核心部分を詳細に記述してください。可能な限り原文を引用し、英語の場合は日本語に全文または詳細に翻訳してください。
+・「full_body」を単なる要約にしないでください。読者が元の記事を読まなくても内容が理解できるレベルの詳しさを求めています。
 ・HTMLタグ（<a>等）、生のURL、[URL]のようなブラケットメタデータは絶対に出力しないでください。
 ・きれいな日本語のみで出力してください。
-・「full_body」は、2000文字以内であれば可能な限り原文のまま（英語なら翻訳）としてください。2000文字を超える場合は、重要な部分を優先して構成し、全体で2000文字を超えないようにしてください。
+・2000文字以内であれば可能な限り詳細に出力し、2000文字を超える場合は重要な部分を優先して構成してください。
 
 【タイトル】: {article_data['title']}
 【記事内容】: {clean_content[:15000]}
@@ -203,7 +205,7 @@ def analyze_article_with_gemini(article_data, page_text=""):
   "segment": "製品区分",
   "region": "地域（Japan, Global等）",
   "bullet_summary": "3行以内の簡潔な箇条書き日本語要約",
-  "full_body": "原文のままの転記、または翻訳（HTML/URLを一切含まない。2000文字以内）"
+  "full_body": "詳細な本文引用、または翻訳（HTML/URLを一切含まない。2000文字以内。要約ではなく詳細な記述を優先）"
 }}"""
 
     try:
@@ -371,16 +373,22 @@ def get_page_text(url):
     """Fetch and extract clean text from a URL."""
     try:
         from bs4 import BeautifulSoup
+        safe_print(f"  [HTTP] Fetching: {url}")
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
-        if resp.status_code != 200: return ""
+        if resp.status_code != 200:
+            safe_print(f"  [WARN] Failed to fetch (Status: {resp.status_code})")
+            return ""
         soup = BeautifulSoup(resp.content, 'html.parser')
         
         for s in soup(["script", "style", "nav", "header", "footer"]):
             s.decompose()
             
         text = soup.get_text()
-        return " ".join(text.split())[:10000]
-    except:
+        clean_text = " ".join(text.split())[:10000]
+        safe_print(f"  [DATA] Extracted text length: {len(clean_text)} chars")
+        return clean_text
+    except Exception as e:
+        safe_print(f"  [ERROR] get_page_text failed: {e}")
         return ""
 
 def main():
@@ -426,6 +434,8 @@ def main():
                 
                 # Fetch full text
                 page_text = get_page_text(data['link'])
+                if not page_text or len(page_text) < 200:
+                    safe_print(f"  [INFO] Page text too short or empty. Falling back to RSS summary.")
                 
                 res = analyze_article_with_gemini(data, page_text)
                 if res and save_to_notion(res, data):
@@ -437,7 +447,10 @@ def main():
             time.sleep(5) # Between feeds
         except Exception as e:
             safe_print(f"  [ERROR] Loop error: {e}")
-    safe_print(f"\n=== Finished. Successfully saved {processed_count} news items to Notion. ===")
+    
+    safe_print(f"\n=== JOB FINISHED SUCCESSFULLY ===")
+    safe_print(f"Successfully saved {processed_count} news items to Notion.")
+    safe_print(f"==================================\n")
 
 if __name__ == "__main__":
     main()
