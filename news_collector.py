@@ -270,7 +270,7 @@ def save_to_notion(result, article_data):
     region_tags = clean_multi_select(result.get("region"))
     if region_tags and region_col: props[region_col] = {"multi_select": region_tags}
     
-    if date_col: props[date_col] = {"date": {"start": datetime.now().isoformat()}}
+    if date_col: props[date_col] = {"date": {"start": article_data.get("date")}}
     
     # Remove summary from properties (we will write it to the page body instead)
     if summary_col in props:
@@ -394,10 +394,18 @@ def main():
             
             # Process up to 15 entries per feed to avoid overload
             for entry in entries[:15]:
+                # 記事の公開日時を取得 (ISO 8601形式)
+                pub_parsed = entry.get("published_parsed")
+                if pub_parsed:
+                    entry_date = datetime(*pub_parsed[:6]).isoformat()
+                else:
+                    entry_date = datetime.now().isoformat()
+
                 data = {
                     "title": entry.title, 
                     "link": entry.link, 
-                    "summary": entry.get("summary", entry.get("description", ""))
+                    "summary": entry.get("summary", entry.get("description", "")),
+                    "date": entry_date
                 }
                 
                 # Fetch full text
