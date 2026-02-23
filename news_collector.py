@@ -219,7 +219,13 @@ def analyze_article_with_gemini(article_data, page_text=""):
             res = json.loads(match.group())
             # AIがURLなどを混ぜてきた場合の保険
             if "full_body" in res:
-                res["full_body"] = re.sub(r'<[^>]+>', '', str(res["full_body"]))
+                fb = res["full_body"]
+                if isinstance(fb, list): fb = "\n".join(fb)
+                res["full_body"] = re.sub(r'<[^>]+>', '', str(fb))
+            if "bullet_summary" in res:
+                bs = res["bullet_summary"]
+                if isinstance(bs, list): bs = "\n".join(bs)
+                res["bullet_summary"] = str(bs)
             safe_print(f"  [MATCH] Clean content generated.")
             return res
         else:
@@ -274,7 +280,10 @@ def save_to_notion(result, article_data):
     children = []
     
     # Summary Section
-    bullets = result.get("bullet_summary", "").strip()
+    bullets = result.get("bullet_summary", "")
+    if isinstance(bullets, list):
+        bullets = "\n".join(bullets)
+    bullets = str(bullets).strip()
     if bullets:
         children.append({
             "object": "block",
@@ -290,7 +299,10 @@ def save_to_notion(result, article_data):
             })
 
     # Body Section
-    body_text = result.get("full_body", "").strip()
+    body_text = result.get("full_body", "")
+    if isinstance(body_text, list):
+        body_text = "\n".join(body_text)
+    body_text = str(body_text).strip()
     if body_text:
         children.append({
             "object": "block",
