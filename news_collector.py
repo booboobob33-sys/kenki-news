@@ -237,7 +237,7 @@ def analyze_article_with_gemini(article_data, page_text=""):
 
     # 入力テキストを準備（原文優先・上限2000文字）
     raw_input = page_text if page_text and len(page_text) >= 200 else article_data.get("summary", "")
-    raw_input = clean_text(raw_input)[:2000]  # HTMLタグ・生URL除去 + 文字数制限
+    raw_input = clean_text(raw_input)[:5000]  # HTMLタグ・生URL除去 + 文字数制限（AIへの入力は5000文字まで）
 
     # 原文が取れなかった場合のURLフォールバック
     if not raw_input:
@@ -260,7 +260,7 @@ def analyze_article_with_gemini(article_data, page_text=""):
 以下のJSONキーで回答してください（値はすべて文字列、Markdown不可）:
 {{
   "bullet_summary": "要点1。\\n要点2。\\n要点3。（日本語で）",
-  "full_body": "【重要ルール】原文が日本語の場合はそのまま転記する。原文が英語の場合は英語原文をそのまま記載し、その直後に改行して日本語訳を続けて記載する。HTMLタグ・URLは含めない。最大2000文字。",
+  "full_body": "【重要ルール】リンクを開かなくても内容が把握できるよう、できる限り詳しく記載すること。原文が日本語の場合はそのまま転記する（最大2000文字）。原文が英語の場合は英語原文をそのまま記載し、改行後に日本語訳を続けて記載する（合計最大2000文字）。省略せず情報を最大限含めること。HTMLタグ・URLは含めない。",
   "lang": "記事の原文言語。'ja' または 'en' または 'other'",
   "brand": "関連メーカー名をカンマ区切り（例: Caterpillar, Komatsu）。不明なら空文字。",
   "segment": "該当セグメントをカンマ区切り（例: 油圧ショベル, ホイールローダー）。不明なら空文字。",
