@@ -96,17 +96,26 @@ def get_best_model():
             for am in available_models:
                 if p == am or p.split('/')[-1] == am.split('/')[-1]:
                     safe_print(f"  [AI] Selected: {am}")
-                    return genai.GenerativeModel(model_name=am)
+                    return genai.GenerativeModel(
+                        model_name=am,
+                        generation_config={"max_output_tokens": 2048}
+                    )
 
         if available_models:
             safe_print(f"  [AI] Using first available: {available_models[0]}")
-            return genai.GenerativeModel(model_name=available_models[0])
+            return genai.GenerativeModel(
+            model_name=available_models[0],
+            generation_config={"max_output_tokens": 2048}
+        )
 
     except Exception as e:
         safe_print(f"  [WARN] Model discovery failed: {e}")
 
     safe_print("  [AI] Absolute fallback: gemini-1.5-flash")
-    return genai.GenerativeModel(model_name="gemini-1.5-flash")
+    return genai.GenerativeModel(
+        model_name="gemini-1.5-flash",
+        generation_config={"max_output_tokens": 2048}
+    )
 
 model = get_best_model()
 
