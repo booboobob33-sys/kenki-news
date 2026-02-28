@@ -138,8 +138,9 @@ ACTUAL_DB_PROPS = get_db_properties()
 if not ACTUAL_DB_PROPS:
     safe_print("  [NOTION] Using hardcoded fallback property names.")
     ACTUAL_DB_PROPS = [
-        "Title", "Source URL", "Published Date（記事日付）",
-        "Brand", "Region", "Segment", "Source Name", "Summary",
+        "Title", "Title(JP)", "Title(EN)", "Source URL",
+        "Published Date（記事日付）", "Brand", "Region", "Segment",
+        "Source Name", "Source", "Summary",
     ]
 
 def get_prop_name(candidates, default_if_empty=None):
@@ -160,6 +161,8 @@ def get_prop_name(candidates, default_if_empty=None):
 # プロパティマッピング
 P_MAP = {
     "title":        get_prop_name(["Title"],                                      default_if_empty="Title"),
+    "title_jp":     get_prop_name(["Title(JP)", "Title (JP)"],                    default_if_empty="Title(JP)"),
+    "title_en":     get_prop_name(["Title(EN)", "Title (EN)"],                    default_if_empty="Title(EN)"),
     "url":          get_prop_name(["Source URL"],                                  default_if_empty="Source URL"),
     "date":         get_prop_name(["Published Date（記事日付）", "Published Date"], default_if_empty="Published Date（記事日付）"),
     "brand":        get_prop_name(["Brand"],                                       default_if_empty="Brand"),
@@ -167,6 +170,7 @@ P_MAP = {
     "region":       get_prop_name(["Region"],                                      default_if_empty="Region"),
     "summary":      get_prop_name(["Summary"],                                     default_if_empty="Summary"),
     "source_name":  get_prop_name(["Source Name"],                                 default_if_empty="Source Name"),
+    "source":       get_prop_name(["Source", "出典"],                              default_if_empty="Source"),
 }
 
 safe_print("  [NOTION] Final mapped columns: " + ", ".join([f"{k}→{v}" for k, v in P_MAP.items() if v]))
@@ -262,6 +266,9 @@ def analyze_article_with_gemini(article_data, page_text=""):
   "bullet_summary": "要点1。\\n要点2。\\n要点3。（日本語で）",
   "full_body": "【重要ルール】リンクを開かなくても内容が把握できるよう、できる限り詳しく記載すること。原文が日本語の場合はそのまま転記する（最大2000文字）。原文が英語の場合は英語原文をそのまま記載し、改行後に日本語訳を続けて記載する（合計最大2000文字）。省略せず情報を最大限含めること。HTMLタグ・URLは含めない。",
   "lang": "記事の原文言語。'ja' または 'en' または 'other'",
+  "title_en": "英語タイトル。原文が英語ならそのまま。日本語原文なら英訳する。出典名（メディア名・社名）は含めない。",
+  "title_jp": "日本語タイトル。原文が日本語ならそのまま。英語原文なら日本語に翻訳する。出典名（メディア名・社名）は含めない。",
+  "source_label": "記事の出典メディア名または企業名のみ（例: 日本経済新聞, Komatsu, Mining.com, Equipment World）。URLや説明文は不要。",
   "brand": "関連メーカー名をカンマ区切り（例: Caterpillar, Komatsu）。不明なら空文字。",
   "segment": "該当セグメントをカンマ区切り（例: 油圧ショベル, ホイールローダー）。不明なら空文字。",
   "region": "関連地域をカンマ区切り（例: North America, Japan）。不明なら空文字。"
@@ -294,6 +301,7 @@ JSONのみ出力し、コードブロック記号（```）は使わないでく�
         return {
             "bullet_summary": "",
             "full_body": fallback_body,
+            "title_jp": "", "title_en": "", "source_label": "",
             "brand": "", "segment": "", "region": "",
         }
     except Exception as e:
@@ -385,12 +393,17 @@ def save_to_notion(result, article_data):
     - プロパティ: Title / Source URL / Published Date / Brand / Segment /
                  Region / Source Name
     - ページ本文: 【要約】箇条書き + 【本文引用/翻訳】原文優先（英語のみ日本語訳付き、2000文字制限）+ ソースリンク
+    - Title(JP): 日本語タイトル（英語記事は翻訳）
+    - Title(EN): 英語タイトル（日本語記事は翻訳）
+    - Source: 出典メディア名・企業名のみ（「- メディア名」は除去）
     """
     safe_print("  [NOTION] Building page...")
 
     # ---- プロパティ構築 ----
     props = {}
     title_col        = P_MAP["title"]
+    title_jp_col     = P_MAP["title_jp"]
+    title_en_col     = P_MAP["title_en"]
     url_col          = P_MAP["url"]
     date_col         = P_MAP["date"]
     brand_col        = P_MAP["brand"]
@@ -398,11 +411,42 @@ def save_to_notion(result, article_data):
     region_col       = P_MAP["region"]
     summary_col      = P_MAP["summary"]
     source_name_col  = P_MAP["source_name"]
+    source_col       = P_MAP["source"]
 
+    # ── タイトルから「 - メディア名」などの出典サフィックスを除去 ──────────
+    import re as _re
+    raw_title = article_data["title"]
+    # " - 出典名" や " | 出典名" をタイトル末尾から除去（例: "News - Komatsu" → "News"）
+    clean_title = _re.sub(r'\s*[-|–—]\s*[^-|–—]{2,60}$', '', raw_title).strip()
+    if not clean_title:
+        clean_title = raw_title  # 除去しすぎた場合は元に戻す
+
+    # AI が生成した JP/EN タイトルを取得（フォールバックはクリーン済み元タイトル）
+    ai_title_jp = str(result.get("title_jp", "")).strip()
+    ai_title_en = str(result.get("title_en", "")).strip()
+
+    # Title(JP): AI翻訳 > 元タイトルが日本語ならそのまま
+    final_title_jp = ai_title_jp if ai_title_jp else clean_title
+    # Title(EN): AI翻訳 > 元タイトルが英語ならそのまま
+    final_title_en = ai_title_en if ai_title_en else clean_title
+
+    # 出典ラベル（AI生成 > article_data の feed_name フォールバック）
+    source_label = str(result.get("source_label", "")).strip()
+    if not source_label:
+        source_label = article_data.get("feed_name", "")
+
+    # Notionプロパティへセット
+    # Title（既存列）には Title(JP) を入れる（一覧で日本語が見やすい）
     if title_col:
-        props[title_col] = {"title": [{"text": {"content": article_data["title"][:100]}}]}
+        props[title_col] = {"title": [{"text": {"content": final_title_jp[:100]}}]}
+    if title_jp_col:
+        props[title_jp_col] = {"rich_text": [{"text": {"content": final_title_jp[:100]}}]}
+    if title_en_col:
+        props[title_en_col] = {"rich_text": [{"text": {"content": final_title_en[:100]}}]}
     if url_col:
         props[url_col] = {"url": article_data["link"]}
+    if source_col and source_label:
+        props[source_col] = {"select": {"name": source_label[:100]}}
     if source_name_col:
         props[source_name_col] = {"select": {"name": "RSS Search Collector"}}
     if date_col:
@@ -644,10 +688,11 @@ def main():
                     entry_date_str = datetime.now(timezone.utc).isoformat()
 
                 data = {
-                    "title":   title,
-                    "link":    link,
-                    "summary": clean_text(entry.get("summary", entry.get("description", ""))),
-                    "date":    entry_date_str,
+                    "title":     title,
+                    "link":      link,
+                    "summary":   clean_text(entry.get("summary", entry.get("description", ""))),
+                    "date":      entry_date_str,
+                    "feed_name": feed["name"],   # 出典フォールバック用
                 }
 
                 safe_print(f"\n  → {title[:60]}")
