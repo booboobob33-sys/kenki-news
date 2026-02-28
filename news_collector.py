@@ -160,9 +160,10 @@ def get_prop_name(candidates, default_if_empty=None):
 
 # プロパティマッピング
 P_MAP = {
-    "title":        get_prop_name(["Title"],                                      default_if_empty="Title"),
+    # Title(EN) がタイトル型（データベースの主キー列）
+    # Notionで "Title" を "Title(EN)" に改名した場合も両方候補に入れる
+    "title":        get_prop_name(["Title(EN)", "Title (EN)", "Title"],           default_if_empty="Title(EN)"),
     "title_jp":     get_prop_name(["Title(JP)", "Title (JP)"],                    default_if_empty="Title(JP)"),
-    "title_en":     get_prop_name(["Title(EN)", "Title (EN)"],                    default_if_empty="Title(EN)"),
     "url":          get_prop_name(["Source URL"],                                  default_if_empty="Source URL"),
     "date":         get_prop_name(["Published Date（記事日付）", "Published Date"], default_if_empty="Published Date（記事日付）"),
     "brand":        get_prop_name(["Brand"],                                       default_if_empty="Brand"),
@@ -301,7 +302,7 @@ JSONのみ出力し、コードブロック記号（```）は使わないでく�
         return {
             "bullet_summary": "",
             "full_body": fallback_body,
-            "title_jp": "", "title_en": "", "source_label": "",
+            "title_en": "", "source_label": "",
             "brand": "", "segment": "", "region": "",
         }
     except Exception as e:
@@ -401,9 +402,8 @@ def save_to_notion(result, article_data):
 
     # ---- プロパティ構築 ----
     props = {}
-    title_col        = P_MAP["title"]
-    title_jp_col     = P_MAP["title_jp"]
-    title_en_col     = P_MAP["title_en"]
+    title_col        = P_MAP["title"]       # Title(EN) — タイトル型
+    title_jp_col     = P_MAP["title_jp"]    # Title(JP) — テキスト型（Rich text）
     url_col          = P_MAP["url"]
     date_col         = P_MAP["date"]
     brand_col        = P_MAP["brand"]
@@ -437,12 +437,12 @@ def save_to_notion(result, article_data):
 
     # Notionプロパティへセット
     # Title（既存列）には Title(JP) を入れる（一覧で日本語が見やすい）
+    # Title(EN): タイトル型（Notionデータベースの主キー列）
     if title_col:
-        props[title_col] = {"title": [{"text": {"content": final_title_jp[:100]}}]}
+        props[title_col] = {"title": [{"text": {"content": final_title_en[:100]}}]}
+    # Title(JP): テキスト型（Rich text）
     if title_jp_col:
         props[title_jp_col] = {"rich_text": [{"text": {"content": final_title_jp[:100]}}]}
-    if title_en_col:
-        props[title_en_col] = {"rich_text": [{"text": {"content": final_title_en[:100]}}]}
     if url_col:
         props[url_col] = {"url": article_data["link"]}
     if source_col and source_label:
