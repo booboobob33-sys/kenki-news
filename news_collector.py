@@ -86,11 +86,11 @@ def get_best_model():
 
         # 優先リスト: 新世代・高速モデルを優先
         preferred = [
-            "models/gemini-2.0-flash-lite",
-            "models/gemini-2.0-flash",
             "models/gemini-1.5-flash",
             "gemini-1.5-flash",
             "models/gemini-1.5-flash-latest",
+            "models/gemini-2.0-flash",
+            "models/gemini-2.0-flash-lite",
         ]
         for p in preferred:
             for am in available_models:
@@ -105,8 +105,8 @@ def get_best_model():
     except Exception as e:
         safe_print(f"  [WARN] Model discovery failed: {e}")
 
-    safe_print("  [AI] Absolute fallback: models/gemini-1.5-flash")
-    return genai.GenerativeModel(model_name="models/gemini-1.5-flash")
+    safe_print("  [AI] Absolute fallback: gemini-1.5-flash")
+    return genai.GenerativeModel(model_name="gemini-1.5-flash")
 
 model = get_best_model()
 
@@ -309,7 +309,10 @@ def is_duplicate(url):
     if not url_col:
         return False
     try:
-        q = notion.databases.query(
+        query_fn = getattr(notion.databases, "query", None)
+        if query_fn is None:
+            return False
+        q = query_fn(
             database_id=DATABASE_ID,
             filter={"property": url_col, "url": {"equals": url}}
         )
