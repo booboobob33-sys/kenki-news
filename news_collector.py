@@ -513,20 +513,86 @@ def save_to_notion(result, article_data):
 
 
 def get_page_text(url):
-    """URLから本文テキストを取得・クリーニングして返す（最大10000文字）。"""
+    """
+    URLから記事本文テキストを抽出して返す（最大10000文字）。
+
+    抽出戦略（優先順）:
+      1. <article> タグ内の <p> テキストを結合（最も精度が高い）
+      2. <article> タグがなければ、メインコンテンツ候補タグ内の <p> を結合
+      3. それも取れなければ、ページ全体の <p> を結合
+      4. <p> が極端に少なければ、ノイズ除去後の全テキストにフォールバック
+
+    ※ 画像・図・広告・ナビなどのノイズを除去してから抽出する。
+    """
     try:
         from bs4 import BeautifulSoup
         safe_print(f"  [HTTP] Fetching: {url}")
-        resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=15
+        )
         if resp.status_code != 200:
             safe_print(f"  [WARN] HTTP {resp.status_code}")
             return ""
+
         soup = BeautifulSoup(resp.content, "html.parser")
-        for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+
+        # ── ノイズタグを除去 ──────────────────────────────────────────────
+        noise_tags = [
+            "script", "style", "nav", "header", "footer", "aside",
+            "figure", "figcaption", "picture", "img",   # 画像関連
+            "iframe", "video", "audio", "source",        # メディア
+            "form", "button", "input", "select",         # フォーム
+            "advertisement", "ads", "related", "share",  # 広告・SNS
+        ]
+        for tag in soup(noise_tags):
             tag.decompose()
+
+        # ── 段落テキストを抽出するヘルパー ───────────────────────────────
+        def extract_paragraphs(container):
+            """コンテナ内の <p> タグからテキストを抽出し、空行除去して結合。"""
+            paras = []
+            for p in container.find_all("p"):
+                txt = p.get_text(" ", strip=True)
+                # 極端に短い断片（キャプション・日付など）は除外
+                if len(txt) > 30:
+                    paras.append(txt)
+            return "\n\n".join(paras)
+
+        # ── 戦略1: <article> タグ優先 ────────────────────────────────────
+        article = soup.find("article")
+        if article:
+            text = extract_paragraphs(article)
+            if len(text) > 200:
+                safe_print(f"  [DATA] Extracted {len(text)} chars (<article> paragraphs)")
+                return text[:10000]
+
+        # ── 戦略2: メインコンテンツ候補タグ ──────────────────────────────
+        for selector in [
+            {"role": "main"}, {"id": "main"}, {"id": "content"},
+            {"id": "article-body"}, {"class": "article-body"},
+            {"class": "post-content"}, {"class": "entry-content"},
+            {"class": "story-body"}, {"class": "article__body"},
+        ]:
+            container = soup.find(attrs=selector) or soup.find("main")
+            if container:
+                text = extract_paragraphs(container)
+                if len(text) > 200:
+                    safe_print(f"  [DATA] Extracted {len(text)} chars (main content paragraphs)")
+                    return text[:10000]
+
+        # ── 戦略3: ページ全体の <p> タグを結合 ───────────────────────────
+        text = extract_paragraphs(soup)
+        if len(text) > 200:
+            safe_print(f"  [DATA] Extracted {len(text)} chars (all paragraphs)")
+            return text[:10000]
+
+        # ── 戦略4: 全テキストフォールバック ──────────────────────────────
         text = " ".join(soup.get_text().split())[:10000]
-        safe_print(f"  [DATA] Extracted {len(text)} chars")
+        safe_print(f"  [DATA] Extracted {len(text)} chars (full text fallback)")
         return text
+
     except Exception as e:
         safe_print(f"  [ERROR] get_page_text failed: {e}")
         return ""
