@@ -304,22 +304,70 @@ JSONのみ出力し、コードブロック記号（```）は使わないでく�
 # Notion 関連関数
 # =============================================================================
 def is_duplicate(url):
-    """URLが既にNotionに登録済みか確認する。"""
+    """
+    URLが既にNotionに登録済みか確認する。
+    notion-client の新旧バージョン両方に対応:
+      新版 (2025-09-03+): notion.data_sources.query()
+      旧版             : notion.databases.query()
+    どちらも失敗した場合は requests で直接 Notion API を叩くフォールバックを持つ。
+    """
     url_col = P_MAP["url"]
     if not url_col:
         return False
+
+    filter_body = {"property": url_col, "url": {"equals": url}}
+
+    # ── 方法1: 新版 SDK (data_sources.query) ──────────────────────────────
     try:
-        query_fn = getattr(notion.databases, "query", None)
-        if query_fn is None:
+        data_sources = getattr(notion, "data_sources", None)
+        if data_sources and hasattr(data_sources, "query"):
+            q = notion.data_sources.query(
+                data_source_id=DATABASE_ID,
+                filter=filter_body
+            )
+            if q.get("results"):
+                safe_print("  [DEDUP] Duplicate found (data_sources.query).")
+                return True
             return False
-        q = query_fn(
-            database_id=DATABASE_ID,
-            filter={"property": url_col, "url": {"equals": url}}
-        )
-        if q.get("results"):
-            return True
     except Exception as e:
-        safe_print(f"  [WARN] Duplicate check failed: {e}")
+        safe_print(f"  [DEDUP] data_sources.query failed: {e}. Trying databases.query...")
+
+    # ── 方法2: 旧版 SDK (databases.query) ────────────────────────────────
+    try:
+        databases = getattr(notion, "databases", None)
+        if databases and hasattr(databases, "query"):
+            q = notion.databases.query(
+                database_id=DATABASE_ID,
+                filter=filter_body
+            )
+            if q.get("results"):
+                safe_print("  [DEDUP] Duplicate found (databases.query).")
+                return True
+            return False
+    except Exception as e:
+        safe_print(f"  [DEDUP] databases.query failed: {e}. Trying direct API...")
+
+    # ── 方法3: requests で直接 Notion REST API を叩くフォールバック ──────
+    try:
+        api_url = f"https://api.notion.com/v1/databases/{DATABASE_ID}/query"
+        headers = {
+            "Authorization": f"Bearer {NOTION_TOKEN}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+        }
+        payload = {"filter": filter_body, "page_size": 1}
+        resp = requests.post(api_url, headers=headers, json=payload, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("results"):
+                safe_print("  [DEDUP] Duplicate found (direct REST API).")
+                return True
+            return False
+        else:
+            safe_print(f"  [WARN] Direct API duplicate check returned HTTP {resp.status_code}")
+    except Exception as e:
+        safe_print(f"  [WARN] All duplicate check methods failed: {e}")
+
     return False
 
 
