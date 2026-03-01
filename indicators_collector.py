@@ -11,7 +11,6 @@ indicators_collector.py
   - 北米住宅着工    (FRED: HOUST)
   - 日本住宅着工    (e-Stat API)
   - 欧州建設生産    (Eurostat API)
-  - 中国製造業PMI   (FRED: CHPMINDXM)
 
 出力: Google Sheets（gspread）
 実行: GitHub Actions 週1回（月曜 JST 6:00）
@@ -108,7 +107,7 @@ def append_if_new(sheet, row_data, date_str):
 # =============================================================================
 # FRED API 共通取得関数
 # =============================================================================
-def fetch_gold_price(start_year=2020):
+def fetch_gold_price(start_year=2015):
     """
     freegoldapi.com から月次金価格データを取得（無料・APIキー不要）。
     GitHubリポジトリのCSVを直接取得する。
@@ -140,7 +139,7 @@ def fetch_gold_price(start_year=2020):
         return []
 
 
-def fetch_fred(series_id, label, start_date="2020-01-01"):
+def fetch_fred(series_id, label, start_date="2015-01-01"):
     """
     FRED APIから過去データを複数件取得して返す。
     戻り値: [(date_str, value_float), ...] 古い順
@@ -167,88 +166,7 @@ def fetch_fred(series_id, label, start_date="2020-01-01"):
 # =============================================================================
 # World Bank API
 # =============================================================================
-def fetch_china_pmi(start_year=2020):
-    """
-    中国国家統計局(NBS)の製造業PMI（官方PMI）を取得。
-    OECDのAPI（無料・APIキー不要）から取得する。
-    エンドポイント: https://sdmx.oecd.org/public/rest/data/
-    代替: GitHub公開CSVデータを使用
-    戻り値: [(date_str, value_float), ...] 古い順
-    """
-    # OECD Stats API経由でChinese Manufacturing PMIを取得
-    # Dataset: MEI_BTS_COS, Series: CN.BSCICP02.STSA.M (China PMI)
-    url = "https://sdmx.oecd.org/public/rest/data/OECD.SDD.STES,DSD_STES@DF_CLI/CHN.BSCICP02.STSA.M"
-    params = {
-        "startPeriod": f"{start_year}-01",
-        "format": "csvfilewithlabels",
-    }
-    try:
-        resp = requests.get(url, params=params, timeout=20,
-                            headers={"Accept": "text/csv"})
-        if resp.status_code == 200 and resp.text.strip():
-            results = []
-            for line in resp.text.strip().split("\n")[1:]:
-                parts = line.split(",")
-                if len(parts) < 2:
-                    continue
-                try:
-                    # 期間列と値列を探す（CSVヘッダーに依存）
-                    # 通常: TIME_PERIOD, OBS_VALUE
-                    date_str = None
-                    val = None
-                    for p in parts:
-                        p = p.strip().strip('"')
-                        if len(p) == 7 and p[4] == "-":  # "2020-01" 形式
-                            date_str = p + "-01"
-                        elif p.replace(".", "").replace("-", "").isdigit() and "." in p:
-                            val = float(p)
-                    if date_str and val and int(date_str[:4]) >= start_year:
-                        results.append((date_str, val))
-                except Exception:
-                    continue
-            if results:
-                results.sort(key=lambda x: x[0])
-                safe_print(f"  [OECD] 中国製造業PMI: {len(results)}件取得")
-                return results
-
-    except Exception as e:
-        safe_print(f"  [WARN] OECD PMI取得失敗: {e}")
-
-    # フォールバック: 国家統計局公表値の静的リスト（2020年以降の主要値）
-    # GitHub datasets/pmi からも取得試行
-    try:
-        url2 = "https://raw.githubusercontent.com/datasets/pmi/refs/heads/main/data/manufacturing-pmi.csv"
-        resp2 = requests.get(url2, timeout=15)
-        if resp2.status_code == 200:
-            results = []
-            for line in resp2.text.strip().split("\n")[1:]:
-                parts = line.strip().split(",")
-                if len(parts) < 3:
-                    continue
-                try:
-                    date_str = parts[0].strip()
-                    # China列を探す（ヘッダーで確認）
-                    year = int(date_str[:4])
-                    if year < start_year:
-                        continue
-                    # China PMIは通常3列目付近
-                    val = float(parts[2].strip()) if parts[2].strip() else None
-                    if val and 40 < val < 65:  # PMIの妥当範囲
-                        results.append((date_str[:7] + "-01", val))
-                except Exception:
-                    continue
-            if results:
-                results.sort(key=lambda x: x[0])
-                safe_print(f"  [GitHub] 中国製造業PMI: {len(results)}件取得")
-                return results
-    except Exception as e2:
-        safe_print(f"  [WARN] GitHub PMI取得失敗: {e2}")
-
-    safe_print("  [WARN] 中国製造業PMI: 全ソースで取得失敗")
-    return []
-
-
-def fetch_worldbank_commodity(commodity_id, label, start_year=2020):
+def fetch_worldbank_commodity(commodity_id, label, start_year=2015):
     """
     World Bank Commodity Price API（Pink Sheet）から月次データを取得。
     commodity_id: "COAL_AUS"（石炭）, "IRON_ORE"（鉄鉱石）など
@@ -287,7 +205,7 @@ def fetch_worldbank_commodity(commodity_id, label, start_year=2020):
 # =============================================================================
 # e-Stat API（日本住宅着工）
 # =============================================================================
-def fetch_estat_housing(start_year=2020):
+def fetch_estat_housing(start_year=2015):
     """
     e-Stat APIから日本の新設住宅着工戸数（月次）を取得。
     statsDataId: 0003103119
@@ -370,7 +288,7 @@ def fetch_estat_housing(start_year=2020):
 # =============================================================================
 # Eurostat API（欧州建設生産指数）
 # =============================================================================
-def fetch_eurostat_construction(start_year=2020):
+def fetch_eurostat_construction(start_year=2015):
     """
     Eurostat APIからEU建設生産指数（月次）を取得。
     複数のパラメータセットを試してどれかで成功したら返す。
@@ -540,13 +458,120 @@ def collect_and_write(spreadsheet):
     write_bulk(sheet, rows)
     time.sleep(2)
 
-    # ── 9. 中国製造業PMI ──────────────────────────────────────────────────
-    # 国家統計局(NBS)の官方製造業PMI - GitHub公開データから取得
-    sheet = get_or_create_sheet(spreadsheet, "中国製造業PMI", ["日付", "中国製造業PMI"])
-    rows = fetch_china_pmi()
-    write_bulk(sheet, rows)
-
     safe_print("\n=== Collection complete ===")
+
+
+# =============================================================================
+# グラフ自動生成
+# =============================================================================
+def create_chart(spreadsheet, sheet_name, title, x_col=0, y_col=1):
+    """
+    指定シートに折れ線グラフを作成する（既存グラフがあればスキップ）。
+    Google Sheets API の batchUpdate を使用。
+    """
+    try:
+        sheet = spreadsheet.worksheet(sheet_name)
+    except Exception:
+        safe_print(f"  [CHART] シートが見つかりません: {sheet_name}")
+        return
+
+    sheet_id = sheet.id
+
+    # 既存グラフ確認
+    try:
+        existing = spreadsheet.fetch_sheet_metadata()
+        sheets_meta = existing.get("sheets", [])
+        for s in sheets_meta:
+            if s["properties"]["sheetId"] == sheet_id:
+                if s.get("charts"):
+                    safe_print(f"  [CHART] 既存グラフあり、スキップ: {sheet_name}")
+                    return
+    except Exception:
+        pass  # メタデータ取得失敗時はそのまま作成を試みる
+
+    # データ行数を取得
+    try:
+        nrows = len(sheet.col_values(1))  # A列のデータ件数
+        if nrows < 2:
+            safe_print(f"  [CHART] データ不足でグラフ作成スキップ: {sheet_name}")
+            return
+    except Exception:
+        nrows = 200
+
+    # グラフ追加リクエスト
+    request = {
+        "addChart": {
+            "chart": {
+                "spec": {
+                    "title": title,
+                    "basicChart": {
+                        "chartType": "LINE",
+                        "legendPosition": "BOTTOM_LEGEND",
+                        "axis": [
+                            {"position": "BOTTOM_AXIS", "title": "日付"},
+                            {"position": "LEFT_AXIS",  "title": title},
+                        ],
+                        "domains": [{
+                            "domain": {
+                                "sourceRange": {
+                                    "sources": [{
+                                        "sheetId": sheet_id,
+                                        "startRowIndex": 1,
+                                        "endRowIndex": nrows,
+                                        "startColumnIndex": x_col,
+                                        "endColumnIndex": x_col + 1,
+                                    }]
+                                }
+                            }
+                        }],
+                        "series": [{
+                            "series": {
+                                "sourceRange": {
+                                    "sources": [{
+                                        "sheetId": sheet_id,
+                                        "startRowIndex": 1,
+                                        "endRowIndex": nrows,
+                                        "startColumnIndex": y_col,
+                                        "endColumnIndex": y_col + 1,
+                                    }]
+                                }
+                            },
+                            "targetAxis": "LEFT_AXIS",
+                        }],
+                        "headerCount": 0,
+                    }
+                },
+                "position": {
+                    "newSheet": True  # グラフ専用シートに配置
+                }
+            }
+        }
+    }
+
+    try:
+        spreadsheet.batch_update({"requests": [request]})
+        safe_print(f"  [CHART] グラフ作成完了: {title}")
+    except Exception as e:
+        safe_print(f"  [CHART] グラフ作成失敗 {sheet_name}: {e}")
+
+
+def create_all_charts(spreadsheet):
+    """全指標のグラフを一括作成する。"""
+    safe_print("\n=== Creating charts ===\n")
+    charts = [
+        ("金価格",       "金価格 (USD/oz)"),
+        ("銅価格",       "銅価格 (USD/lb)"),
+        ("原油価格WTI",  "WTI原油価格 (USD/bbl)"),
+        ("石炭価格",     "石炭価格 (USD/ton)"),
+        ("鉄鉱石価格",   "鉄鉱石価格 (USD/dmtu)"),
+        ("北米住宅着工", "北米住宅着工 (千件)"),
+        ("日本住宅着工", "日本住宅着工 前年比(%)"),
+        ("欧州建設生産指数", "EU建設生産指数 (2021=100)"),
+    ]
+    for sheet_name, title in charts:
+        create_chart(spreadsheet, sheet_name, title)
+        time.sleep(2)  # APIレート制限対策
+    safe_print("\n=== Charts complete ===")
 
 # =============================================================================
 # メイン
@@ -555,6 +580,7 @@ def main():
     check_env()
     spreadsheet = connect_sheets()
     collect_and_write(spreadsheet)
+    create_all_charts(spreadsheet)
 
 if __name__ == "__main__":
     main()
