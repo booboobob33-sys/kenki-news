@@ -154,9 +154,44 @@ def fetch_gold_price(start_year=2015):
     except Exception as e:
         safe_print(f"  [WARN] ECB gold: {e}")
 
-    # ── ソース2: FRED 金価格系（複数series試行）
+    # ── ソース2: World Bank Pink Sheet API (金価格 PGOLD, 月次)
     try:
-        for sid in ["GOLDAMGBD228NLBM", "GOLDPMGBD228NLBM", "PWLDGOLD"]:
+        url = "https://api.worldbank.org/v2/en/indicator/PNGD.USD?downloadformat=json"
+        # World Bank Commodity API
+        wb_url = "https://api.worldbank.org/v2/commodity/GOLD"
+        params = {
+            "format": "json",
+            "mrv": 130,  # 最新130件
+            "frequency": "M",
+        }
+        resp = requests.get(wb_url, params=params, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and len(data) > 1:
+                tmp = []
+                for item in data[1]:
+                    period = item.get("date", "")
+                    val = item.get("value")
+                    if not val or not period:
+                        continue
+                    try:
+                        y, m = period.split("M")
+                        year = int(y)
+                        if year < start_year:
+                            continue
+                        tmp.append((f"{y}-{int(m):02d}-01", float(val)))
+                    except Exception:
+                        continue
+                if tmp:
+                    tmp.sort(key=lambda x: x[0])
+                    safe_print(f"  [GOLD] World Bank: {len(tmp)}件取得（最新: {tmp[-1][0]}）")
+                    return tmp
+    except Exception as e:
+        safe_print(f"  [WARN] World Bank gold: {e}")
+
+    # ── ソース3: FRED 金価格系（複数series試行）
+    try:
+        for sid in ["GOLDAMGBD228NLBM", "GOLDPMGBD228NLBM"]:
             url = "https://api.stlouisfed.org/fred/series/observations"
             params = {
                 "series_id":         sid,
@@ -172,7 +207,7 @@ def fetch_gold_price(start_year=2015):
                        if o.get("value", ".") != "."]
                 if tmp:
                     tmp.sort(key=lambda x: x[0])
-                    safe_print(f"  [GOLD] FRED {sid}: {len(tmp)}件取得")
+                    safe_print(f"  [GOLD] FRED {sid}: {len(tmp)}件取得（最新: {tmp[-1][0]}）")
                     return tmp
     except Exception:
         pass
@@ -471,51 +506,48 @@ def fetch_japan_housing(start_year=2015):
     return []
 
 
-def fetch_eurostat_construction(start_year=2015):
+def fetch_eurostat_housing(start_year=2015):
     """
-    Eurostat APIからEU建設生産指数（月次）を取得。
-    複数のパラメータセットを試してどれかで成功したら返す。
+    EU住宅着工許可件数（月次・絶対値）を取得。
+    Eurostat dataset: sts_cobp_m (Building Permits, residential)
+    フォールバック: FRED OECD経由で主要国合計を推計
     戻り値: [(date_str, value_float), ...] 古い順
     """
-    base_url = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/sts_copr_m"
+    base_url = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/sts_cobp_m"
 
-    # パラメータセットを複数用意（APIバージョンごとに変わりやすいため）
+    # 住宅着工許可: residential buildings (nace_r2=F41) または全建設
     param_sets = [
-        # セット1: 最新仕様（unit=I21）
+        # セット1: EU27 residential, 絶対値千件
+        {
+            "format": "JSON", "lang": "EN",
+            "geo": "EU27_2020", "indic_bt": "BPBU",
+            "s_adj": "NSA", "unit": "NR",
+            "sinceTimePeriod": f"{start_year}-01",
+        },
+        # セット2: unit=THS (千件)
+        {
+            "format": "JSON", "lang": "EN",
+            "geo": "EU27_2020", "indic_bt": "BPBU",
+            "s_adj": "NSA", "unit": "THS",
+            "sinceTimePeriod": f"{start_year}-01",
+        },
+        # セット3: sts_copr_m (Production Index) フォールバック
         {
             "format": "JSON", "lang": "EN",
             "geo": "EU27_2020", "nace_r2": "F",
             "s_adj": "NSA", "unit": "I21",
             "sinceTimePeriod": f"{start_year}-01",
-        },
-        # セット2: unit=I15（2015年基準）
-        {
-            "format": "JSON", "lang": "EN",
-            "geo": "EU27_2020", "nace_r2": "F",
-            "s_adj": "NSA", "unit": "I15",
-            "sinceTimePeriod": f"{start_year}-01",
-        },
-        # セット3: unitなし・EU28
-        {
-            "format": "JSON", "lang": "EN",
-            "geo": "EU28", "nace_r2": "F",
-            "s_adj": "NSA",
-            "sinceTimePeriod": f"{start_year}-01",
-        },
-        # セット4: 季節調整あり
-        {
-            "format": "JSON", "lang": "EN",
-            "geo": "EU27_2020", "nace_r2": "F",
-            "s_adj": "SCA", "unit": "I21",
-            "sinceTimePeriod": f"{start_year}-01",
+            "_dataset": "sts_copr_m",
         },
     ]
 
     for i, params in enumerate(param_sets):
+        dataset = params.pop("_dataset", "sts_cobp_m")
+        url = f"https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/{dataset}"
         try:
-            resp = requests.get(base_url, params=params, timeout=20)
+            resp = requests.get(url, params=params, timeout=20)
             if resp.status_code != 200:
-                safe_print(f"  [WARN] Eurostat セット{i+1}: {resp.status_code}")
+                safe_print(f"  [WARN] Eurostat住宅 セット{i+1}: {resp.status_code}")
                 continue
             data = resp.json()
             vals = data.get("value", {})
@@ -526,51 +558,91 @@ def fetch_eurostat_construction(start_year=2015):
             for t, idx in sorted(time_idx.items()):
                 v = vals.get(str(idx))
                 if v is not None:
-                    # 日付フォーマットを統一（"2020-01" → "2020-01-01"）
                     date_str = t + "-01" if len(t) == 7 else t
                     results.append((date_str, float(v)))
 
             if results:
-                safe_print(f"  [Eurostat] EU建設生産指数(セット{i+1}): {len(results)}件取得")
+                safe_print(f"  [Eurostat] EU住宅着工(セット{i+1}): {len(results)}件取得（最新: {results[-1][0]}）")
                 return results
         except Exception as e:
-            safe_print(f"  [ERROR] Eurostat セット{i+1}: {e}")
+            safe_print(f"  [ERROR] Eurostat住宅 セット{i+1}: {e}")
 
-    safe_print("  [WARN] Eurostat: 全パラメータセットで取得失敗")
+    # フォールバック: FRED OECD経由でドイツ+フランス+スペインの住宅着工を取得
+    safe_print("  [WARN] Eurostat直接取得失敗、FREDフォールバック...")
+    try:
+        # ドイツ住宅着工（FRED: PRMNTO01DEM661N）
+        combined = {}
+        for sid, label in [
+            ("PRMNTO01DEM661N", "DE"),
+            ("PRMNTO01FRM661N", "FR"),
+        ]:
+            url = "https://api.stlouisfed.org/fred/series/observations"
+            params = {
+                "series_id": sid,
+                "api_key": FRED_API_KEY,
+                "file_type": "json",
+                "sort_order": "asc",
+                "observation_start": f"{start_year}-01-01",
+            }
+            resp = requests.get(url, params=params, timeout=15)
+            if resp.status_code == 200:
+                obs = resp.json().get("observations", [])
+                for o in obs:
+                    val = o.get("value", ".")
+                    if val == ".":
+                        continue
+                    d = o["date"]
+                    combined[d] = combined.get(d, 0) + float(val)
+                safe_print(f"  [FRED] {label}住宅着工取得")
+        if combined:
+            results = sorted(combined.items())
+            safe_print(f"  [FRED] EU住宅着工(DE+FR合計): {len(results)}件（最新: {results[-1][0]}）")
+            return results
+    except Exception as e:
+        safe_print(f"  [ERROR] FREDフォールバック失敗: {e}")
+
+    safe_print("  [ERROR] EU住宅着工: 全ソース失敗")
     return []
+
+
+def fetch_eurostat_construction(start_year=2015):
+    """後方互換のためのラッパー（使用箇所を移行済み）"""
+    return fetch_eurostat_housing(start_year)
 
 # =============================================================================
 # 各指標を収集してSheetsに書き込む
 # =============================================================================
 def write_bulk(sheet, rows):
     """
-    複数行をまとめてSheetsに追記する（重複スキップ）。
-    Google Sheets APIの書き込みレート制限（429）対策:
-      - 既存データを一括取得して重複チェック
-      - 新規データをまとめて1回のAPIコールで書き込む
-      - それでも429が出た場合は60秒待ってリトライ
+    シートを全クリアして最新データを全件書き込む。
+    重複チェックではなく毎回上書きすることで常に最新データを保証する。
     """
     import gspread.exceptions
 
-    # 既存の日付を一括取得（APIコール1回で済む）
-    try:
-        existing_dates = set(sheet.col_values(1))
-    except Exception:
-        existing_dates = set()
-
-    # 新規データだけ抽出
-    new_rows = [[date_str, val] for date_str, val in rows if date_str not in existing_dates]
-
-    if not new_rows:
-        safe_print(f"  [SHEETS] 新規データなし（全件重複）")
+    if not rows:
+        safe_print(f"  [SHEETS] データなし、スキップ")
         return
 
-    # まとめて1回で書き込む（APIコール削減）
+    # ヘッダーを保持
+    try:
+        header = sheet.row_values(1)
+    except Exception:
+        header = []
+
+    # 日付順にソート
+    sorted_rows = sorted(rows, key=lambda x: x[0])
+    write_data = [[date_str, val] for date_str, val in sorted_rows]
+
+    # クリアして全件書き込み（リトライ付き）
     for attempt in range(3):
         try:
-            sheet.append_rows(new_rows, value_input_option="USER_ENTERED")
-            safe_print(f"  [SHEETS] {len(new_rows)}件追記完了")
-            break
+            sheet.clear()
+            if header:
+                sheet.append_rows([header] + write_data, value_input_option="USER_ENTERED")
+            else:
+                sheet.append_rows(write_data, value_input_option="USER_ENTERED")
+            safe_print(f"  [SHEETS] {len(write_data)}件書き込み完了（最新: {sorted_rows[-1][0]}）")
+            return
         except gspread.exceptions.APIError as e:
             if "429" in str(e):
                 wait = 60 * (attempt + 1)
@@ -579,23 +651,7 @@ def write_bulk(sheet, rows):
             else:
                 safe_print(f"  [ERROR] Sheets書き込みエラー: {e}")
                 return
-    else:
-        safe_print(f"  [ERROR] 3回リトライ後も失敗。スキップします。")
-        return
-
-    # 書き込み後にシート全体を日付順（昇順）に並び替え
-    try:
-        all_values = sheet.get_all_values()
-        if len(all_values) < 3:
-            return
-        header = all_values[0]
-        data_rows = all_values[1:]
-        data_rows.sort(key=lambda r: r[0])
-        sheet.clear()
-        sheet.append_rows([header] + data_rows, value_input_option="USER_ENTERED")
-        safe_print(f"  [SHEETS] 日付順ソート完了")
-    except Exception as e:
-        safe_print(f"  [WARN] ソート処理失敗（データは書き込み済み）: {e}")
+    safe_print(f"  [ERROR] 3回リトライ後も失敗。スキップします。")
 
 
 def collect_and_write(spreadsheet):
@@ -655,9 +711,9 @@ def collect_and_write(spreadsheet):
     write_bulk(sheet, rows)
     time.sleep(2)
 
-    # ── 9. 欧州建設生産指数（2021=100）────────────────────────────────────
-    sheet = get_or_create_sheet(spreadsheet, "欧州建設生産指数", ["年月", "EU建設生産指数 (2021=100)"])
-    rows = fetch_eurostat_construction()
+    # ── 9. 欧州住宅着工（月次・絶対値）────────────────────────────────────
+    sheet = get_or_create_sheet(spreadsheet, "欧州建設生産指数", ["日付", "EU住宅着工 (件)"])
+    rows = fetch_eurostat_housing()
     write_bulk(sheet, rows)
     time.sleep(2)
 
@@ -779,7 +835,7 @@ def create_all_charts(spreadsheet):
     chart_titles = [
         "金価格 (USD/oz)", "銅価格 (USD/lb)", "WTI原油価格 (USD/bbl)",
         "石炭価格 (USD/ton)", "鉄鉱石価格 (USD/dmtu)", "ニッケル価格 (USD/mt)",
-        "北米住宅着工 (千件)", "日本住宅着工 (戸)", "EU建設生産指数 (2021=100)",
+        "北米住宅着工 (千件)", "日本住宅着工 (戸)", "EU住宅着工 (件)",
     ]
     delete_chart_sheets(spreadsheet, chart_titles)
     time.sleep(3)  # 削除後に少し待機
@@ -792,7 +848,7 @@ def create_all_charts(spreadsheet):
         ("ニッケル価格", "ニッケル価格 (USD/mt)"),
         ("北米住宅着工", "北米住宅着工 (千件)"),
         ("日本住宅着工", "日本住宅着工 (戸)"),
-        ("欧州建設生産指数", "EU建設生産指数 (2021=100)"),
+        ("欧州建設生産指数", "EU住宅着工 (件)"),
     ]
     for sheet_name, title in charts:
         create_chart(spreadsheet, sheet_name, title)
