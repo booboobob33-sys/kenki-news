@@ -118,10 +118,13 @@ def fetch_gold_price(start_year=2015):
     results = []
 
     # ── ソース1: ECB API 金/USD価格 (月次・最新まで確実に取得可能)
+    # EXR/M.XAU.USD.SP00.A = 1 XAU (troy oz) のUSD価格（月次）
     try:
         url = "https://data-api.ecb.europa.eu/service/data/EXR/M.XAU.USD.SP00.A"
         params = {
             "startPeriod": f"{start_year}-01",
+            "endPeriod": datetime.now(timezone.utc).strftime("%Y-%m"),
+            "detail": "dataonly",
             "format": "csvfilewithlabels",
         }
         resp = requests.get(url, params=params, timeout=20,
@@ -394,20 +397,174 @@ def fetch_japan_housing(start_year=2015):
     """
     日本の新設住宅着工戸数（月次・絶対値）を取得。
     ソース優先順:
-      1. OECD SDMX API: 月次着工戸数（PRMNTO01.JPN.ST.M）
-      2. e-Stat APIフォールバック（statsDataId複数試行）
-    戻り値: [(date_str, value_float), ...] 古い順
+      1. e-Stat getStatsList → getStatsData API（住宅着工統計 月次）
+      2. MLIT公式CSVダウンロード（時系列表）
+      3. OECD SDMX API フォールバック
+    戻り値: [(date_str, value_float), ...] 古い順（date_str: "YYYY-MM-01"）
     """
-    # ── ソース1: OECD SDMX REST API（月次着工件数・絶対値）
-    # PRMNTO01 = Dwellings Started, seasonally adjusted / WSCNDW01 = Work started
-    # ST = Absolute values（絶対値）
-    for dataset, measure in [
-        ("OECD.SDD.STES,DSD_STES@DF_MEI_BTS", "PRMNTO01.JPN.ST.M"),
-        ("OECD.SDD.STES,DSD_STES@DF_MEI_BTS", "WSCNDW01.JPN.ST.M"),
-        ("OECD.SDD.STES,DSD_STES@DF_CLI",     "PRMNTO01.JPN.ST.M"),
+
+    # ── ソース1: e-Stat getStatsList で最新のstatsDataIdを動的に取得
+    # tstat=000001016966（住宅着工統計）, cycle=1（月次）
+    try:
+        list_url = "https://api.e-stat.go.jp/rest/3.0/app/json/getStatsList"
+        list_params = {
+            "appId":      ESTAT_API_KEY,
+            "statsCode":  "00600120",
+            "searchWord": "新設住宅着工戸数",
+            "statsField": "00",
+            "surveyYears": "202001-202612",
+            "limit":      50,
+        }
+        list_resp = requests.get(list_url, params=list_params, timeout=20)
+        if list_resp.status_code == 200:
+            list_data = list_resp.json()
+            tables = (list_data.get("GET_STATS_LIST", {})
+                               .get("DATALIST_INF", {})
+                               .get("TABLE_INF", []))
+            if isinstance(tables, dict):
+                tables = [tables]
+            # 月次・全国合計の表を探す
+            monthly_ids = []
+            for t in tables:
+                cycle = t.get("CYCLE", "")
+                title = t.get("TITLE", {})
+                if isinstance(title, dict):
+                    title = title.get("$", "")
+                stat_id = t.get("@id", "")
+                if "月次" in cycle or "月" in str(t.get("SURVEY_DATE", "")):
+                    monthly_ids.append(stat_id)
+            safe_print(f"  [e-Stat] 月次statsDataId候補: {monthly_ids[:5]}")
+    except Exception as e:
+        safe_print(f"  [WARN] e-Stat getStatsList: {e}")
+        monthly_ids = []
+
+    # ── ソース2: 既知のstatsDataIdを直接試行（月次・全国合計着工戸数）
+    # e-Stat「住宅着工統計」月次の時系列データベースID
+    # tclass1=0000000110 = 新設住宅（利用関係別）合計
+    known_ids = [
+        "0003103532",  # 住宅着工統計 月次（OECD経由で以前取得できていたID）
+        "0003103103",
+        "0003103019",
+        "0003115785",  # 新設住宅着工戸数 月次 全国
+        "0003115786",
+        "0003130749",
+        "0003130750",
+        "0003143880",
+        "0003143881",
+    ] + monthly_ids
+
+    for stats_id in known_ids:
+        try:
+            url = "https://api.e-stat.go.jp/rest/3.0/app/json/getStatsData"
+            params = {
+                "appId":             ESTAT_API_KEY,
+                "statsDataId":       stats_id,
+                "metaGetFlg":        "N",
+                "cntGetFlg":         "N",
+                "limit":             1000,
+                "startPosition":     1,
+            }
+            resp = requests.get(url, params=params, timeout=20)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            status = data.get("GET_STATS_DATA", {}).get("RESULT", {}).get("STATUS", 1)
+            if status != 0:
+                continue
+            values = (data.get("GET_STATS_DATA", {})
+                         .get("STATISTICAL_DATA", {})
+                         .get("DATA_INF", {})
+                         .get("VALUE", []))
+            if not values:
+                continue
+            results = []
+            for item in values:
+                raw_time = item.get("@time", "")  # 例: "2024100000"
+                val = item.get("$", "")
+                if not val or val in ("-", "***", "...", "－"):
+                    continue
+                try:
+                    # @timeのフォーマット: "YYYYMM0000" または "YYYY-MM"
+                    if len(raw_time) >= 6:
+                        year = int(raw_time[:4])
+                        month = int(raw_time[4:6])
+                    else:
+                        continue
+                    if year < start_year or month == 0 or month > 12:
+                        continue
+                    # 全国合計のみ（@area="00000"またはなし）
+                    area = item.get("@area", "00000")
+                    if area not in ("00000", "0", "", "R00000"):
+                        continue
+                    results.append((f"{year}-{month:02d}-01", float(val.replace(",", ""))))
+                except Exception:
+                    continue
+            if results:
+                results.sort(key=lambda x: x[0])
+                # 重複排除（同じ日付は最後の値を使用）
+                seen = {}
+                for d, v in results:
+                    seen[d] = v
+                deduped = sorted(seen.items())
+                safe_print(f"  [e-Stat] ID:{stats_id} 日本住宅着工: {len(deduped)}件（最新: {deduped[-1][0]}）")
+                return deduped
+        except Exception as e:
+            pass  # 次のIDへ
+
+    # ── ソース3: MLIT公式 住宅着工統計 時系列CSV
+    # 国土交通省が公開している長期時系列CSVを直接取得
+    mlit_urls = [
+        # 住宅着工統計 年月次集計（新設住宅着工戸数 合計）
+        "https://www.mlit.go.jp/common/001080837.csv",
+        "https://www.mlit.go.jp/common/001080838.csv",
+        # 別候補
+        "https://www.mlit.go.jp/toukeijouhou/chojou/xls/jyutaku-chako.csv",
+    ]
+    for url in mlit_urls:
+        try:
+            resp = requests.get(url, timeout=15,
+                                headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code != 200:
+                continue
+            content_text = resp.content.decode("cp932", errors="replace")
+            results = []
+            for line in content_text.split("\n"):
+                parts = line.strip().split(",")
+                if len(parts) < 2:
+                    continue
+                try:
+                    # 年月フォーマット: "2020年1月" または "2020/1" など
+                    date_part = parts[0].strip().strip('"')
+                    val_part = parts[1].strip().strip('"').replace(",", "")
+                    year = month = None
+                    if "年" in date_part and "月" in date_part:
+                        year = int(date_part.split("年")[0])
+                        month = int(date_part.split("年")[1].replace("月", ""))
+                    elif "/" in date_part:
+                        y, m = date_part.split("/")[:2]
+                        year, month = int(y), int(m)
+                    if year and month and year >= start_year:
+                        results.append((f"{year}-{month:02d}-01", float(val_part)))
+                except Exception:
+                    continue
+            if results:
+                results.sort(key=lambda x: x[0])
+                safe_print(f"  [MLIT CSV] 日本住宅着工: {len(results)}件（最新: {results[-1][0]}）")
+                return results
+        except Exception as e:
+            safe_print(f"  [WARN] MLIT CSV {url}: {e}")
+
+    # ── ソース4: OECD SDMX API（前年比ではなく絶対値を試みる）
+    oecd_measures = [
+        "PRMNTO01.JPN.ST.M",     # 絶対値・月次
+        "PRMNTO01.JPN.STSA.M",   # 季節調整済み絶対値
+        "WSCNDW01.JPN.ST.M",     # Work started 絶対値
+    ]
+    for dataset_suffix, measure in [
+        ("OECD.SDD.STES,DSD_STES@DF_MEI_BTS", m) for m in oecd_measures
     ]:
         try:
-            url = f"https://sdmx.oecd.org/public/rest/data/{dataset}/{measure}"
+            url = f"https://sdmx.oecd.org/public/rest/data/{dataset_suffix}/{measure}"
             params = {
                 "startPeriod": f"{start_year}-01",
                 "format": "csvfilewithlabels",
@@ -429,7 +586,7 @@ def fetch_japan_housing(start_year=2015):
                 if len(parts) <= max(ti, vi):
                     continue
                 try:
-                    period = parts[ti]   # "2020-01"
+                    period = parts[ti]
                     val = float(parts[vi])
                     year = int(period[:4])
                     if year < start_year:
@@ -439,72 +596,13 @@ def fetch_japan_housing(start_year=2015):
                     continue
             if results:
                 results.sort(key=lambda x: x[0])
-                safe_print(f"  [OECD] 日本住宅着工({measure}): {len(results)}件取得")
+                safe_print(f"  [OECD] {measure}: {len(results)}件（最新: {results[-1][0]}）")
                 return results
         except Exception as e:
             safe_print(f"  [WARN] OECD {measure}: {e}")
 
-    # ── ソース2: e-Stat API（複数のstatsDataIdを試行）
-    # 正しいID候補: 建築着工統計調査・住宅着工統計
-    estat_ids = [
-        "0003103019",  # 新設住宅着工戸数・月次・全国合計
-        "0003103020",
-        "0003103021",
-        "0003102933",
-        "0003088023",
-    ]
-    for stats_id in estat_ids:
-        try:
-            url = "https://api.e-stat.go.jp/rest/3.0/app/json/getStatsData"
-            params = {
-                "appId":             ESTAT_API_KEY,
-                "statsDataId":       stats_id,
-                "metaGetFlg":        "N",
-                "cntGetFlg":         "N",
-                "explanationGetFlg": "N",
-                "limit":             500,
-                "startPosition":     1,
-            }
-            resp = requests.get(url, params=params, timeout=20)
-            resp.raise_for_status()
-            data = resp.json()
-            status = data.get("GET_STATS_DATA", {}).get("RESULT", {}).get("STATUS", 1)
-            if status != 0:
-                continue
-            values = (data.get("GET_STATS_DATA", {})
-                         .get("STATISTICAL_DATA", {})
-                         .get("DATA_INF", {})
-                         .get("VALUE", []))
-            results = []
-            for item in values:
-                raw_time = item.get("@time", "")
-                val = item.get("$", "")
-                if not val or val in ("-", "***", "..."):
-                    continue
-                try:
-                    year = int(raw_time[:4])
-                    month_str = raw_time[6:8] if len(raw_time) >= 8 else "00"
-                    month = int(month_str)
-                    if year < start_year or month == 0:
-                        continue
-                    area = item.get("@area", "00000")
-                    if area not in ("00000", "0", ""):
-                        continue
-                    results.append((f"{year}-{month:02d}-01", float(val)))
-                except Exception:
-                    continue
-            if results:
-                results.sort(key=lambda x: x[0])
-                seen = {}
-                deduped = [(d, v) for d, v in results if d not in seen and not seen.update({d: True})]
-                safe_print(f"  [e-Stat] 日本住宅着工(ID:{stats_id}): {len(deduped)}件取得")
-                return deduped
-        except Exception as e:
-            safe_print(f"  [WARN] e-Stat {stats_id}: {e}")
-
     safe_print("  [ERROR] 日本住宅着工: 全ソース取得失敗")
     return []
-
 
 def fetch_eurostat_housing(start_year=2015):
     """
