@@ -387,7 +387,7 @@ def write_bulk(sheet, rows):
         try:
             sheet.append_rows(new_rows, value_input_option="USER_ENTERED")
             safe_print(f"  [SHEETS] {len(new_rows)}件追記完了")
-            return
+            break
         except gspread.exceptions.APIError as e:
             if "429" in str(e):
                 wait = 60 * (attempt + 1)
@@ -396,7 +396,23 @@ def write_bulk(sheet, rows):
             else:
                 safe_print(f"  [ERROR] Sheets書き込みエラー: {e}")
                 return
-    safe_print(f"  [ERROR] 3回リトライ後も失敗。スキップします。")
+    else:
+        safe_print(f"  [ERROR] 3回リトライ後も失敗。スキップします。")
+        return
+
+    # 書き込み後にシート全体を日付順（昇順）に並び替え
+    try:
+        all_values = sheet.get_all_values()
+        if len(all_values) < 3:
+            return
+        header = all_values[0]
+        data_rows = all_values[1:]
+        data_rows.sort(key=lambda r: r[0])
+        sheet.clear()
+        sheet.append_rows([header] + data_rows, value_input_option="USER_ENTERED")
+        safe_print(f"  [SHEETS] 日付順ソート完了")
+    except Exception as e:
+        safe_print(f"  [WARN] ソート処理失敗（データは書き込み済み）: {e}")
 
 
 def collect_and_write(spreadsheet):
