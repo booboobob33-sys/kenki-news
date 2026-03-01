@@ -108,6 +108,38 @@ def append_if_new(sheet, row_data, date_str):
 # =============================================================================
 # FRED API 共通取得関数
 # =============================================================================
+def fetch_gold_price(start_year=2020):
+    """
+    freegoldapi.com から月次金価格データを取得（無料・APIキー不要）。
+    GitHubリポジトリのCSVを直接取得する。
+    戻り値: [(date_str, value_float), ...] 古い順
+    """
+    url = "https://raw.githubusercontent.com/datasets/gold-prices/main/data/monthly.csv"
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        results = []
+        for line in resp.text.strip().split("\n")[1:]:  # ヘッダースキップ
+            parts = line.strip().split(",")
+            if len(parts) < 2:
+                continue
+            date_str = parts[0].strip()   # 例: "2020-01-01"
+            val_str  = parts[1].strip()
+            try:
+                year = int(date_str[:4])
+                if year < start_year:
+                    continue
+                results.append((date_str, float(val_str)))
+            except Exception:
+                continue
+        results.sort(key=lambda x: x[0])
+        safe_print(f"  [GOLD] 金価格: {len(results)}件取得")
+        return results
+    except Exception as e:
+        safe_print(f"  [ERROR] 金価格取得失敗: {e}")
+        return []
+
+
 def fetch_fred(series_id, label, start_date="2020-01-01"):
     """
     FRED APIから過去データを複数件取得して返す。
@@ -274,12 +306,43 @@ def fetch_eurostat_construction(start_year=2020):
 # 各指標を収集してSheetsに書き込む
 # =============================================================================
 def write_bulk(sheet, rows):
-    """複数行をまとめてSheetsに追記する（重複スキップ）。"""
-    added = 0
-    for date_str, val in rows:
-        if append_if_new(sheet, [date_str, val], date_str):
-            added += 1
-    safe_print(f"  [SHEETS] {added}件追記完了")
+    """
+    複数行をまとめてSheetsに追記する（重複スキップ）。
+    Google Sheets APIの書き込みレート制限（429）対策:
+      - 既存データを一括取得して重複チェック
+      - 新規データをまとめて1回のAPIコールで書き込む
+      - それでも429が出た場合は60秒待ってリトライ
+    """
+    import gspread.exceptions
+
+    # 既存の日付を一括取得（APIコール1回で済む）
+    try:
+        existing_dates = set(sheet.col_values(1))
+    except Exception:
+        existing_dates = set()
+
+    # 新規データだけ抽出
+    new_rows = [[date_str, val] for date_str, val in rows if date_str not in existing_dates]
+
+    if not new_rows:
+        safe_print(f"  [SHEETS] 新規データなし（全件重複）")
+        return
+
+    # まとめて1回で書き込む（APIコール削減）
+    for attempt in range(3):
+        try:
+            sheet.append_rows(new_rows, value_input_option="USER_ENTERED")
+            safe_print(f"  [SHEETS] {len(new_rows)}件追記完了")
+            return
+        except gspread.exceptions.APIError as e:
+            if "429" in str(e):
+                wait = 60 * (attempt + 1)
+                safe_print(f"  [WARN] 429 Rate limit. {wait}秒待機してリトライ...")
+                time.sleep(wait)
+            else:
+                safe_print(f"  [ERROR] Sheets書き込みエラー: {e}")
+                return
+    safe_print(f"  [ERROR] 3回リトライ後も失敗。スキップします。")
 
 
 def collect_and_write(spreadsheet):
@@ -287,9 +350,9 @@ def collect_and_write(spreadsheet):
     safe_print(f"\n=== Collecting indicators ({today}) ===\n")
 
     # ── 1. 金価格（USD/troy oz）────────────────────────────────────────────
-    # GOLDPMGBD228NLBM = ロンドン金午後値決め（GOLDAMGBD228NLBMの後継）
+    # freegoldapi.com: 無料・APIキー不要・月次データ
     sheet = get_or_create_sheet(spreadsheet, "金価格", ["日付", "金価格 (USD/oz)"])
-    rows = fetch_fred("GOLDPMGBD228NLBM", "金価格")
+    rows = fetch_gold_price()
     write_bulk(sheet, rows)
     time.sleep(2)
 
