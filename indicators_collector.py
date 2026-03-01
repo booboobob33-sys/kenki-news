@@ -155,47 +155,89 @@ def _yfinance_gold_monthly(start_year=2015):
 
 def _stooq_gold_monthly(start_year=2015):
     """
-    Stooq.com から金価格（GC.F）の日次CSVを取得し月次平均に変換する。
+    Stooq.com から金価格（GC.F）の月次または日次CSVを取得し月次データを返す。
     認証不要・HTTPS・requests のみで動作。
-    URL: https://stooq.com/q/d/l/?s=gc.f&i=m  (月次足)
-    戻り値: {yyyymm: avg_price} の辞書、または空 {}
+    戻り値: {yyyymm: price} の辞書、または空 {}
     """
-    try:
-        # 月次足を直接取得（最も確実）
-        url = "https://stooq.com/q/d/l/?s=gc.f&i=m"
-        headers = {
-            "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) "
-                           "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/120.0 Safari/537.36")
-        }
-        resp = requests.get(url, headers=headers, timeout=20)
-        if resp.status_code != 200 or not resp.text.strip():
-            safe_print(f"  [WARN] Stooq: HTTP {resp.status_code}")
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/122.0.0.0 Safari/537.36"),
+        "Accept": "text/html,application/xhtml+xml,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    def _parse_stooq_csv(text, monthly_bar=True):
+        """CSV本文をパースして {yyyymm: close} を返す"""
+        lines = text.strip().split("\n")
+        if len(lines) < 2:
             return {}
-        lines = resp.text.strip().split("\n")
-        # ヘッダー行: Date,Open,High,Low,Close,Volume
+        # ヘッダー確認
+        header = lines[0].strip().lower()
+        if "date" not in header:
+            safe_print(f"  [WARN] Stooq: 予期しないヘッダー: {lines[0][:80]}")
+            return {}
+        # Close列インデックスを動的に取得
+        cols = [c.strip().lower() for c in lines[0].split(",")]
+        try:
+            date_i  = cols.index("date")
+            close_i = cols.index("close")
+        except ValueError:
+            date_i, close_i = 0, 4
         monthly = {}
         for line in lines[1:]:
             parts = line.strip().split(",")
-            if len(parts) < 5:
+            if len(parts) <= max(date_i, close_i):
                 continue
             try:
-                date_str = parts[0].strip()          # YYYY-MM-DD
-                close    = float(parts[4].strip())   # Close
-                if close <= 0:
+                date_str = parts[date_i].strip()
+                close    = float(parts[close_i].strip())
+                if close <= 0 or date_str[:4].isdigit() is False:
                     continue
                 year = int(date_str[:4])
                 if year < start_year:
                     continue
-                ym = date_str[:7].replace("-", "")   # "YYYYMM"
-                monthly[ym] = close                  # 月次足なので1件/月
+                ym = date_str[:7].replace("-", "")  # "YYYYMM"
+                if monthly_bar:
+                    monthly[ym] = close
+                else:
+                    # 日次の場合は月内の最後の値（後で上書き = 末日値）
+                    monthly[ym] = close
             except Exception:
                 continue
-        safe_print(f"  [GOLD] Stooq月次: {len(monthly)}件取得")
         return monthly
+
+    # ── 試行1: 月次足（i=m）
+    try:
+        url = "https://stooq.com/q/d/l/?s=gc.f&i=m"
+        resp = requests.get(url, headers=headers, timeout=20)
+        safe_print(f"  [GOLD] Stooq月次: HTTP {resp.status_code}, "
+                   f"len={len(resp.text)}, "
+                   f"先頭80字: {resp.text[:80].strip()!r}")
+        if resp.status_code == 200 and resp.text.strip():
+            monthly = _parse_stooq_csv(resp.text, monthly_bar=True)
+            if monthly:
+                safe_print(f"  [GOLD] Stooq月次: {len(monthly)}件取得（最新: {max(monthly)}）")
+                return monthly
     except Exception as e:
-        safe_print(f"  [WARN] Stooq gold: {e}")
-        return {}
+        safe_print(f"  [WARN] Stooq月次: {e}")
+
+    # ── 試行2: 日次足（i=d）でフォールバック
+    try:
+        url = "https://stooq.com/q/d/l/?s=gc.f&i=d"
+        resp = requests.get(url, headers=headers, timeout=20)
+        safe_print(f"  [GOLD] Stooq日次: HTTP {resp.status_code}, "
+                   f"len={len(resp.text)}")
+        if resp.status_code == 200 and resp.text.strip():
+            monthly = _parse_stooq_csv(resp.text, monthly_bar=False)
+            if monthly:
+                safe_print(f"  [GOLD] Stooq日次→月次変換: {len(monthly)}件（最新: {max(monthly)}）")
+                return monthly
+    except Exception as e:
+        safe_print(f"  [WARN] Stooq日次: {e}")
+
+    safe_print("  [WARN] Stooq: 全試行失敗")
+    return {}
 
 
 def _imf_pcps_gold_monthly(start_year=2015):
