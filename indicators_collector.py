@@ -111,19 +111,41 @@ def fetch_gold_price(start_year=2015):
     """
     金価格（USD/troy oz）月次データを取得。
     ソース優先順:
-      1. FRED API (FRED series: GOLDAMGBD228NLBM の後継として World Bank PGOLD)
-      2. GitHub datasets CSV (2025-09まで)
+      1. FRED GOLDAMGBD228NLBM (ロンドン金市場AM値、最新まで)
+      2. FRED GOLDPMGBD228NLBM (ロンドン金市場PM値)
+      3. ECB EXR XAU/USD (数ヶ月ラグあり)
+      4. GitHub datasets CSV (フォールバック)
     戻り値: [(date_str, value_float), ...] 古い順
     """
-    results = []
+    # ── ソース1&2: FRED 金価格 (最も確実・最新まで月次)
+    for sid in ["GOLDAMGBD228NLBM", "GOLDPMGBD228NLBM"]:
+        try:
+            url = "https://api.stlouisfed.org/fred/series/observations"
+            params = {
+                "series_id":         sid,
+                "api_key":           FRED_API_KEY,
+                "file_type":         "json",
+                "sort_order":        "asc",
+                "observation_start": f"{start_year}-01-01",
+                "observation_end":   datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            }
+            resp = requests.get(url, params=params, timeout=15)
+            if resp.status_code == 200:
+                obs = resp.json().get("observations", [])
+                tmp = [(o["date"], float(o["value"])) for o in obs
+                       if o.get("value", ".") != "."]
+                if tmp:
+                    tmp.sort(key=lambda x: x[0])
+                    safe_print(f"  [GOLD] FRED {sid}: {len(tmp)}件取得（最新: {tmp[-1][0]}）")
+                    return tmp
+        except Exception as e:
+            safe_print(f"  [WARN] FRED {sid}: {e}")
 
-    # ── ソース1: ECB API 金/USD価格 (月次・最新まで確実に取得可能)
-    # EXR/M.XAU.USD.SP00.A = 1 XAU (troy oz) のUSD価格（月次）
+    # ── ソース3: ECB EXR XAU/USD（確定値は数ヶ月ラグあり）
     try:
         url = "https://data-api.ecb.europa.eu/service/data/EXR/M.XAU.USD.SP00.A"
         params = {
             "startPeriod": f"{start_year}-01",
-            "endPeriod": datetime.now(timezone.utc).strftime("%Y-%m"),
             "detail": "dataonly",
             "format": "csvfilewithlabels",
         }
@@ -137,6 +159,7 @@ def fetch_gold_price(start_year=2015):
                 vi = header.index("OBS_VALUE")
             except ValueError:
                 ti, vi = 0, 1
+            tmp = []
             for line in lines[1:]:
                 parts = [p.strip().strip('"') for p in line.split(",")]
                 if len(parts) <= max(ti, vi):
@@ -147,75 +170,17 @@ def fetch_gold_price(start_year=2015):
                     year = int(period[:4])
                     if year < start_year:
                         continue
-                    results.append((period[:7] + "-01", val))
+                    tmp.append((period[:7] + "-01", val))
                 except Exception:
                     continue
-            if results:
-                results.sort(key=lambda x: x[0])
-                safe_print(f"  [GOLD] ECB XAU/USD: {len(results)}件取得")
-                return results
+            if tmp:
+                tmp.sort(key=lambda x: x[0])
+                safe_print(f"  [GOLD] ECB XAU/USD: {len(tmp)}件取得（最新: {tmp[-1][0]}）")
+                return tmp
     except Exception as e:
         safe_print(f"  [WARN] ECB gold: {e}")
 
-    # ── ソース2: World Bank Pink Sheet API (金価格 PGOLD, 月次)
-    try:
-        url = "https://api.worldbank.org/v2/en/indicator/PNGD.USD?downloadformat=json"
-        # World Bank Commodity API
-        wb_url = "https://api.worldbank.org/v2/commodity/GOLD"
-        params = {
-            "format": "json",
-            "mrv": 130,  # 最新130件
-            "frequency": "M",
-        }
-        resp = requests.get(wb_url, params=params, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            if isinstance(data, list) and len(data) > 1:
-                tmp = []
-                for item in data[1]:
-                    period = item.get("date", "")
-                    val = item.get("value")
-                    if not val or not period:
-                        continue
-                    try:
-                        y, m = period.split("M")
-                        year = int(y)
-                        if year < start_year:
-                            continue
-                        tmp.append((f"{y}-{int(m):02d}-01", float(val)))
-                    except Exception:
-                        continue
-                if tmp:
-                    tmp.sort(key=lambda x: x[0])
-                    safe_print(f"  [GOLD] World Bank: {len(tmp)}件取得（最新: {tmp[-1][0]}）")
-                    return tmp
-    except Exception as e:
-        safe_print(f"  [WARN] World Bank gold: {e}")
-
-    # ── ソース3: FRED 金価格系（複数series試行）
-    try:
-        for sid in ["GOLDAMGBD228NLBM", "GOLDPMGBD228NLBM"]:
-            url = "https://api.stlouisfed.org/fred/series/observations"
-            params = {
-                "series_id":         sid,
-                "api_key":           FRED_API_KEY,
-                "file_type":         "json",
-                "sort_order":        "asc",
-                "observation_start": f"{start_year}-01-01",
-            }
-            resp = requests.get(url, params=params, timeout=15)
-            if resp.status_code == 200:
-                obs = resp.json().get("observations", [])
-                tmp = [(o["date"], float(o["value"])) for o in obs
-                       if o.get("value", ".") != "."]
-                if tmp:
-                    tmp.sort(key=lambda x: x[0])
-                    safe_print(f"  [GOLD] FRED {sid}: {len(tmp)}件取得（最新: {tmp[-1][0]}）")
-                    return tmp
-    except Exception:
-        pass
-
-    # ── ソース3: GitHub datasets CSV (フォールバック、〜2025-09)
+    # ── ソース4: GitHub datasets CSV (フォールバック)
     try:
         url = "https://raw.githubusercontent.com/datasets/gold-prices/main/data/monthly.csv"
         resp = requests.get(url, timeout=15)
@@ -236,7 +201,7 @@ def fetch_gold_price(start_year=2015):
                 continue
         if tmp:
             tmp.sort(key=lambda x: x[0])
-            safe_print(f"  [GOLD] GitHub CSV: {len(tmp)}件取得")
+            safe_print(f"  [GOLD] GitHub CSV: {len(tmp)}件取得（最新: {tmp[-1][0]}）")
             return tmp
     except Exception as e:
         safe_print(f"  [ERROR] 金価格全ソース失敗: {e}")
@@ -397,178 +362,149 @@ def fetch_japan_housing(start_year=2015):
     """
     日本の新設住宅着工戸数（月次・絶対値）を取得。
     ソース優先順:
-      1. e-Stat getStatsList → getStatsData API（住宅着工統計 月次）
-      2. MLIT公式CSVダウンロード（時系列表）
-      3. OECD SDMX API フォールバック
-    戻り値: [(date_str, value_float), ...] 古い順（date_str: "YYYY-MM-01"）
+      1. e-Stat 住宅着工統計 DB (statsDataId=0003103532, 月次時系列)
+      2. OECD.Stat API (PRMNTO01.JPN.ST.M)
+      3. Trading Economics / MLIT 公式 (スクレイピング不可のためスキップ)
+    戻り値: [(date_str, value_float), ...] 古い順
     """
-
-    # ── ソース1: e-Stat getStatsList で最新のstatsDataIdを動的に取得
-    # tstat=000001016966（住宅着工統計）, cycle=1（月次）
+    # ── ソース1: e-Stat データベース検索 (正しいstatsDataIdを動的特定)
+    # 住宅着工統計 (toukei=00600120) の月次データ一覧を取得
     try:
-        list_url = "https://api.e-stat.go.jp/rest/3.0/app/json/getStatsList"
-        list_params = {
-            "appId":      ESTAT_API_KEY,
-            "statsCode":  "00600120",
-            "searchWord": "新設住宅着工戸数",
-            "statsField": "00",
-            "surveyYears": "202001-202612",
-            "limit":      50,
+        search_url = "https://api.e-stat.go.jp/rest/3.0/app/json/getStatsList"
+        search_params = {
+            "appId":       ESTAT_API_KEY,
+            "statsCode":   "00600120",   # 建築着工統計調査
+            "explanationGetFlg": "N",
+            "limit":       100,
         }
-        list_resp = requests.get(list_url, params=list_params, timeout=20)
-        if list_resp.status_code == 200:
-            list_data = list_resp.json()
-            tables = (list_data.get("GET_STATS_LIST", {})
-                               .get("DATALIST_INF", {})
-                               .get("TABLE_INF", []))
+        r = requests.get(search_url, params=search_params, timeout=20)
+        if r.status_code == 200:
+            tables = (r.json().get("GET_STATS_LIST", {})
+                              .get("DATALIST_INF", {})
+                              .get("TABLE_INF", []))
             if isinstance(tables, dict):
                 tables = [tables]
-            # 月次・全国合計の表を探す
-            monthly_ids = []
+            # 月次の時系列データを探す（CYCLE="月次"かつタイトルに着工戸数）
+            candidate_ids = []
             for t in tables:
-                cycle = t.get("CYCLE", "")
-                title = t.get("TITLE", {})
+                stat_id = t.get("@id", "")
+                title = t.get("TITLE", "")
                 if isinstance(title, dict):
                     title = title.get("$", "")
-                stat_id = t.get("@id", "")
-                if "月次" in cycle or "月" in str(t.get("SURVEY_DATE", "")):
-                    monthly_ids.append(stat_id)
-            safe_print(f"  [e-Stat] 月次statsDataId候補: {monthly_ids[:5]}")
+                cycle = str(t.get("CYCLE", ""))
+                survey = str(t.get("SURVEY_DATE", ""))
+                # 月次で戸数データ
+                if ("月" in cycle or len(survey) == 6) and stat_id:
+                    candidate_ids.append(stat_id)
+            safe_print(f"  [e-Stat] 候補ID数: {len(candidate_ids)}")
     except Exception as e:
-        safe_print(f"  [WARN] e-Stat getStatsList: {e}")
-        monthly_ids = []
+        safe_print(f"  [WARN] e-Stat list: {e}")
+        candidate_ids = []
 
-    # ── ソース2: 既知のstatsDataIdを直接試行（月次・全国合計着工戸数）
-    # e-Stat「住宅着工統計」月次の時系列データベースID
-    # tclass1=0000000110 = 新設住宅（利用関係別）合計
-    known_ids = [
-        "0003103532",  # 住宅着工統計 月次（OECD経由で以前取得できていたID）
-        "0003103103",
-        "0003103019",
-        "0003115785",  # 新設住宅着工戸数 月次 全国
+    # 固定IDも追加（建築着工統計 住宅着工統計 月次 時系列）
+    fixed_ids = [
+        "0003103532",  # 新設住宅着工戸数 月次（利用関係別）
+        "0003115785",
         "0003115786",
         "0003130749",
         "0003130750",
         "0003143880",
         "0003143881",
-    ] + monthly_ids
+        "0003155440",
+        "0003155441",
+        "0003166875",
+        "0003166876",
+        "0003178205",
+    ]
 
-    for stats_id in known_ids:
+    all_ids = fixed_ids + [x for x in candidate_ids if x not in fixed_ids]
+
+    for stats_id in all_ids:
         try:
             url = "https://api.e-stat.go.jp/rest/3.0/app/json/getStatsData"
             params = {
-                "appId":             ESTAT_API_KEY,
-                "statsDataId":       stats_id,
-                "metaGetFlg":        "N",
-                "cntGetFlg":         "N",
-                "limit":             1000,
-                "startPosition":     1,
+                "appId":       ESTAT_API_KEY,
+                "statsDataId": stats_id,
+                "metaGetFlg":  "Y",
+                "cntGetFlg":   "N",
+                "limit":       100000,
             }
-            resp = requests.get(url, params=params, timeout=20)
+            resp = requests.get(url, params=params, timeout=25)
             if resp.status_code != 200:
                 continue
             data = resp.json()
-            status = data.get("GET_STATS_DATA", {}).get("RESULT", {}).get("STATUS", 1)
-            if status != 0:
+            result_status = (data.get("GET_STATS_DATA", {})
+                                 .get("RESULT", {}).get("STATUS", 1))
+            if result_status != 0:
                 continue
+
             values = (data.get("GET_STATS_DATA", {})
                          .get("STATISTICAL_DATA", {})
                          .get("DATA_INF", {})
                          .get("VALUE", []))
             if not values:
                 continue
+
+            # メタデータから「合計」カテゴリのコードを特定
+            class_inf = (data.get("GET_STATS_DATA", {})
+                            .get("STATISTICAL_DATA", {})
+                            .get("CLASS_INF", {})
+                            .get("CLASS_OBJ", []))
+            if isinstance(class_inf, dict):
+                class_inf = [class_inf]
+
+            total_codes = set()
+            for cls in class_inf:
+                classes = cls.get("CLASS", [])
+                if isinstance(classes, dict):
+                    classes = [classes]
+                for c in classes:
+                    name = c.get("@name", "")
+                    code = c.get("@code", "")
+                    if name in ("合計", "総数", "計", "total", "Total"):
+                        total_codes.add(code)
+
             results = []
+            seen_dates = {}
             for item in values:
-                raw_time = item.get("@time", "")  # 例: "2024100000"
-                val = item.get("$", "")
-                if not val or val in ("-", "***", "...", "－"):
+                raw_time = item.get("@time", "")
+                val_str = item.get("$", "")
+                if not val_str or val_str in ("-", "***", "...", "－", "x"):
                     continue
                 try:
-                    # @timeのフォーマット: "YYYYMM0000" または "YYYY-MM"
-                    if len(raw_time) >= 6:
-                        year = int(raw_time[:4])
-                        month = int(raw_time[4:6])
-                    else:
+                    year = int(raw_time[:4])
+                    month = int(raw_time[4:6]) if len(raw_time) >= 6 else 0
+                    if year < start_year or month < 1 or month > 12:
                         continue
-                    if year < start_year or month == 0 or month > 12:
-                        continue
-                    # 全国合計のみ（@area="00000"またはなし）
-                    area = item.get("@area", "00000")
-                    if area not in ("00000", "0", "", "R00000"):
-                        continue
-                    results.append((f"{year}-{month:02d}-01", float(val.replace(",", ""))))
+                    val = float(val_str.replace(",", ""))
+                    date_key = f"{year}-{month:02d}-01"
+                    # 合計コードのデータを優先、または全体を取得して後でフィルタ
+                    cat_code = item.get("@cat01", item.get("@cat", ""))
+                    is_total = (cat_code in total_codes or
+                                not total_codes or
+                                cat_code in ("", "000", "00"))
+                    if is_total:
+                        # 大きい値（合計）を選ぶ
+                        if date_key not in seen_dates or seen_dates[date_key] < val:
+                            seen_dates[date_key] = val
                 except Exception:
                     continue
-            if results:
-                results.sort(key=lambda x: x[0])
-                # 重複排除（同じ日付は最後の値を使用）
-                seen = {}
-                for d, v in results:
-                    seen[d] = v
-                deduped = sorted(seen.items())
-                safe_print(f"  [e-Stat] ID:{stats_id} 日本住宅着工: {len(deduped)}件（最新: {deduped[-1][0]}）")
-                return deduped
-        except Exception as e:
-            pass  # 次のIDへ
 
-    # ── ソース3: MLIT公式 住宅着工統計 時系列CSV
-    # 国土交通省が公開している長期時系列CSVを直接取得
-    mlit_urls = [
-        # 住宅着工統計 年月次集計（新設住宅着工戸数 合計）
-        "https://www.mlit.go.jp/common/001080837.csv",
-        "https://www.mlit.go.jp/common/001080838.csv",
-        # 別候補
-        "https://www.mlit.go.jp/toukeijouhou/chojou/xls/jyutaku-chako.csv",
-    ]
-    for url in mlit_urls:
-        try:
-            resp = requests.get(url, timeout=15,
-                                headers={"User-Agent": "Mozilla/5.0"})
-            if resp.status_code != 200:
-                continue
-            content_text = resp.content.decode("cp932", errors="replace")
-            results = []
-            for line in content_text.split("\n"):
-                parts = line.strip().split(",")
-                if len(parts) < 2:
-                    continue
-                try:
-                    # 年月フォーマット: "2020年1月" または "2020/1" など
-                    date_part = parts[0].strip().strip('"')
-                    val_part = parts[1].strip().strip('"').replace(",", "")
-                    year = month = None
-                    if "年" in date_part and "月" in date_part:
-                        year = int(date_part.split("年")[0])
-                        month = int(date_part.split("年")[1].replace("月", ""))
-                    elif "/" in date_part:
-                        y, m = date_part.split("/")[:2]
-                        year, month = int(y), int(m)
-                    if year and month and year >= start_year:
-                        results.append((f"{year}-{month:02d}-01", float(val_part)))
-                except Exception:
-                    continue
-            if results:
-                results.sort(key=lambda x: x[0])
-                safe_print(f"  [MLIT CSV] 日本住宅着工: {len(results)}件（最新: {results[-1][0]}）")
-                return results
+            if seen_dates:
+                results = sorted(seen_dates.items())
+                # 合理的な範囲チェック（月次着工戸数は5000〜200000の範囲）
+                results = [(d, v) for d, v in results if 5000 <= v <= 200000]
+                if len(results) >= 12:  # 最低1年分あれば有効
+                    safe_print(f"  [e-Stat] ID:{stats_id} {len(results)}件（最新: {results[-1][0]}）")
+                    return results
         except Exception as e:
-            safe_print(f"  [WARN] MLIT CSV {url}: {e}")
+            pass
 
-    # ── ソース4: OECD SDMX API（前年比ではなく絶対値を試みる）
-    oecd_measures = [
-        "PRMNTO01.JPN.ST.M",     # 絶対値・月次
-        "PRMNTO01.JPN.STSA.M",   # 季節調整済み絶対値
-        "WSCNDW01.JPN.ST.M",     # Work started 絶対値
-    ]
-    for dataset_suffix, measure in [
-        ("OECD.SDD.STES,DSD_STES@DF_MEI_BTS", m) for m in oecd_measures
-    ]:
+    # ── ソース2: OECD SDMX API（絶対値）
+    for measure in ["PRMNTO01.JPN.ST.M", "PRMNTO01.JPN.STSA.M", "WSCNDW01.JPN.ST.M"]:
         try:
-            url = f"https://sdmx.oecd.org/public/rest/data/{dataset_suffix}/{measure}"
-            params = {
-                "startPeriod": f"{start_year}-01",
-                "format": "csvfilewithlabels",
-            }
+            url = f"https://sdmx.oecd.org/public/rest/data/OECD.SDD.STES,DSD_STES@DF_MEI_BTS/{measure}"
+            params = {"startPeriod": f"{start_year}-01", "format": "csvfilewithlabels"}
             resp = requests.get(url, params=params, timeout=25,
                                 headers={"Accept": "text/csv"})
             if resp.status_code != 200 or not resp.text.strip():
@@ -580,7 +516,7 @@ def fetch_japan_housing(start_year=2015):
                 vi = header.index("OBS_VALUE")
             except ValueError:
                 ti, vi = 0, 1
-            results = []
+            tmp = []
             for line in lines[1:]:
                 parts = [p.strip().strip('"') for p in line.split(",")]
                 if len(parts) <= max(ti, vi):
@@ -591,13 +527,13 @@ def fetch_japan_housing(start_year=2015):
                     year = int(period[:4])
                     if year < start_year:
                         continue
-                    results.append((period[:7] + "-01", val))
+                    tmp.append((period[:7] + "-01", val))
                 except Exception:
                     continue
-            if results:
-                results.sort(key=lambda x: x[0])
-                safe_print(f"  [OECD] {measure}: {len(results)}件（最新: {results[-1][0]}）")
-                return results
+            if tmp:
+                tmp.sort(key=lambda x: x[0])
+                safe_print(f"  [OECD] {measure}: {len(tmp)}件（最新: {tmp[-1][0]}）")
+                return tmp
         except Exception as e:
             safe_print(f"  [WARN] OECD {measure}: {e}")
 
@@ -606,37 +542,38 @@ def fetch_japan_housing(start_year=2015):
 
 def fetch_eurostat_housing(start_year=2015):
     """
-    EU住宅着工許可件数（月次・絶対値）を取得。
-    Eurostat dataset: sts_cobp_m (Building Permits, residential)
-    フォールバック: FRED OECD経由で主要国合計を推計
-    戻り値: [(date_str, value_float), ...] 古い順
+    EU住宅着工（建設許可件数, 月次・絶対値）を取得。
+    Eurostat: sts_cobp_m (Building Permits, residential buildings)
+    フォールバック: FRED ドイツ+フランス住宅着工合算
     """
+    # ── ソース1: Eurostat sts_cobp_m
     base_url = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/sts_cobp_m"
-
-    # 住宅着工許可: residential buildings (nace_r2=F41) または全建設
     param_sets = [
-        # セット1: EU27 residential, 絶対値千件
-        {
-            "format": "JSON", "lang": "EN",
-            "geo": "EU27_2020", "indic_bt": "BPBU",
-            "s_adj": "NSA", "unit": "NR",
-            "sinceTimePeriod": f"{start_year}-01",
-        },
-        # セット2: unit=THS (千件)
-        {
-            "format": "JSON", "lang": "EN",
-            "geo": "EU27_2020", "indic_bt": "BPBU",
-            "s_adj": "NSA", "unit": "THS",
-            "sinceTimePeriod": f"{start_year}-01",
-        },
-        # セット3: sts_copr_m (Production Index) フォールバック
-        {
-            "format": "JSON", "lang": "EN",
-            "geo": "EU27_2020", "nace_r2": "F",
-            "s_adj": "NSA", "unit": "I21",
-            "sinceTimePeriod": f"{start_year}-01",
-            "_dataset": "sts_copr_m",
-        },
+        # 住宅建物許可件数 EU27 絶対値（NR=件数）
+        {"format": "JSON", "lang": "EN", "geo": "EU27_2020",
+         "indic_bt": "BPBU", "s_adj": "NSA", "unit": "NR",
+         "sinceTimePeriod": f"{start_year}-01"},
+        # unit=THS（千件）
+        {"format": "JSON", "lang": "EN", "geo": "EU27_2020",
+         "indic_bt": "BPBU", "s_adj": "NSA", "unit": "THS",
+         "sinceTimePeriod": f"{start_year}-01"},
+        # EU28
+        {"format": "JSON", "lang": "EN", "geo": "EU28",
+         "indic_bt": "BPBU", "s_adj": "NSA", "unit": "NR",
+         "sinceTimePeriod": f"{start_year}-01"},
+        # 季節調整あり
+        {"format": "JSON", "lang": "EN", "geo": "EU27_2020",
+         "indic_bt": "BPBU", "s_adj": "SCA", "unit": "NR",
+         "sinceTimePeriod": f"{start_year}-01"},
+        # 生産指数（フォールバック用）
+        {"format": "JSON", "lang": "EN", "geo": "EU27_2020",
+         "nace_r2": "F", "s_adj": "NSA", "unit": "I21",
+         "sinceTimePeriod": f"{start_year}-01",
+         "_dataset": "sts_copr_m"},
+        {"format": "JSON", "lang": "EN", "geo": "EU27_2020",
+         "nace_r2": "F", "s_adj": "NSA", "unit": "I15",
+         "sinceTimePeriod": f"{start_year}-01",
+         "_dataset": "sts_copr_m"},
     ]
 
     for i, params in enumerate(param_sets):
@@ -645,35 +582,35 @@ def fetch_eurostat_housing(start_year=2015):
         try:
             resp = requests.get(url, params=params, timeout=20)
             if resp.status_code != 200:
-                safe_print(f"  [WARN] Eurostat住宅 セット{i+1}: {resp.status_code}")
+                safe_print(f"  [WARN] Eurostat セット{i+1}: {resp.status_code}")
                 continue
             data = resp.json()
             vals = data.get("value", {})
             dims = data.get("dimension", {})
-            time_idx = dims.get("time", {}).get("category", {}).get("index", {})
-
+            time_idx = (dims.get("time", {})
+                           .get("category", {})
+                           .get("index", {}))
             results = []
-            for t, idx in sorted(time_idx.items()):
+            for t, idx in sorted(time_idx.items(), key=lambda x: x[0]):
                 v = vals.get(str(idx))
                 if v is not None:
                     date_str = t + "-01" if len(t) == 7 else t
                     results.append((date_str, float(v)))
-
             if results:
-                safe_print(f"  [Eurostat] EU住宅着工(セット{i+1}): {len(results)}件取得（最新: {results[-1][0]}）")
+                safe_print(f"  [Eurostat] EU住宅(セット{i+1}/{dataset}): {len(results)}件（最新: {results[-1][0]}）")
                 return results
         except Exception as e:
-            safe_print(f"  [ERROR] Eurostat住宅 セット{i+1}: {e}")
+            safe_print(f"  [WARN] Eurostat セット{i+1}: {e}")
 
-    # フォールバック: FRED OECD経由でドイツ+フランス+スペインの住宅着工を取得
+    # ── ソース2: FRED ドイツ+フランス+スペイン住宅着工合算
     safe_print("  [WARN] Eurostat直接取得失敗、FREDフォールバック...")
-    try:
-        # ドイツ住宅着工（FRED: PRMNTO01DEM661N）
-        combined = {}
-        for sid, label in [
-            ("PRMNTO01DEM661N", "DE"),
-            ("PRMNTO01FRM661N", "FR"),
-        ]:
+    combined = {}
+    for sid, label in [
+        ("PRMNTO01DEM661N", "ドイツ"),
+        ("PRMNTO01FRM661N", "フランス"),
+        ("PRMNTO01ESM661N", "スペイン"),
+    ]:
+        try:
             url = "https://api.stlouisfed.org/fred/series/observations"
             params = {
                 "series_id": sid,
@@ -684,20 +621,19 @@ def fetch_eurostat_housing(start_year=2015):
             }
             resp = requests.get(url, params=params, timeout=15)
             if resp.status_code == 200:
-                obs = resp.json().get("observations", [])
-                for o in obs:
+                for o in resp.json().get("observations", []):
                     val = o.get("value", ".")
-                    if val == ".":
-                        continue
-                    d = o["date"]
-                    combined[d] = combined.get(d, 0) + float(val)
+                    if val != ".":
+                        d = o["date"]
+                        combined[d] = combined.get(d, 0) + float(val)
                 safe_print(f"  [FRED] {label}住宅着工取得")
-        if combined:
-            results = sorted(combined.items())
-            safe_print(f"  [FRED] EU住宅着工(DE+FR合計): {len(results)}件（最新: {results[-1][0]}）")
-            return results
-    except Exception as e:
-        safe_print(f"  [ERROR] FREDフォールバック失敗: {e}")
+        except Exception:
+            pass
+
+    if combined:
+        results = sorted(combined.items())
+        safe_print(f"  [FRED] EU住宅着工(DE+FR+ES合算): {len(results)}件（最新: {results[-1][0]}）")
+        return results
 
     safe_print("  [ERROR] EU住宅着工: 全ソース失敗")
     return []
