@@ -308,7 +308,7 @@ const INDICATORS = [
     category: '貴金属・エネルギー',
     items: [
       { key: '金価格',      label: '金価格',      unit: 'USD / oz',   color: '#e8c84a', sheetName: '金価格',      col: 1 },
-      { key: '銅価格',      label: '銅価格',      unit: 'USD / lb',   color: '#e8714a', sheetName: '銅価格',      col: 1 },
+      { key: '銅価格',      label: '銅価格',      unit: 'USD / MT',   color: '#e8714a', sheetName: '銅価格',      col: 1 },
       { key: '原油WTI',     label: 'WTI原油',     unit: 'USD / bbl',  color: '#4a9ee8', sheetName: '原油価格WTI', col: 1 },
     ]
   },
@@ -324,7 +324,6 @@ const INDICATORS = [
     category: '建設・住宅',
     items: [
       { key: '北米住宅着工', label: '北米住宅着工', unit: '千件',  color: '#4ae8a0', sheetName: '北米住宅着工',   col: 1 },
-      { key: '日本住宅着工', label: '日本住宅着工', unit: '戸 / 月', color: '#e84a9d', sheetName: '日本住宅着工',   col: 1 },
       { key: 'EU建設指数',   label: 'EU住宅着工',    unit: '件 / 月',  color: '#4ae8e8', sheetName: '欧州建設生産指数', col: 1 },
     ]
   }
@@ -357,7 +356,7 @@ function parseCSV(text) {
 // ════════════════════════════════════════════════════════
 // Chart.js でミニ折れ線グラフを描画
 // ════════════════════════════════════════════════════════
-function drawChart(canvasId, data, color) {
+function drawChart(canvasId, data, color, yLabel) {
   const ctx = document.getElementById(canvasId);
   if (!ctx || data.length < 2) return;
 
@@ -411,12 +410,48 @@ function drawChart(canvasId, data, color) {
       },
       scales: {
         x: {
-          display: false,
-          grid: { display: false }
+          display: true,
+          grid: { display: false },
+          ticks: {
+            color: '#4a5068',
+            font: { family: 'DM Mono', size: 9 },
+            maxTicksLimit: 6,
+            maxRotation: 0,
+            callback: function(val, idx) {
+              const label = this.getLabelForValue(val);
+              // YYYY-MM-DD → "YY/MM" 形式に短縮
+              if (label && label.length >= 7) return label.slice(2,4) + '/' + label.slice(5,7);
+              return label;
+            }
+          },
+          border: { color: '#252a38' }
         },
         y: {
-          display: false,
-          grid: { display: false }
+          display: true,
+          position: 'right',
+          grid: {
+            display: true,
+            color: 'rgba(255,255,255,0.04)',
+          },
+          ticks: {
+            color: '#4a5068',
+            font: { family: 'DM Mono', size: 9 },
+            maxTicksLimit: 4,
+            callback: function(val) {
+              // 大きな数字は短縮表示
+              if (Math.abs(val) >= 1000000) return (val/1000000).toFixed(1) + 'M';
+              if (Math.abs(val) >= 1000) return (val/1000).toFixed(0) + 'k';
+              return val.toLocaleString();
+            }
+          },
+          title: {
+            display: true,
+            text: yLabel || '',
+            color: '#4a5068',
+            font: { family: 'DM Mono', size: 9 },
+            padding: { bottom: 4 }
+          },
+          border: { color: '#252a38' }
         }
       },
       interaction: { mode: 'nearest', axis: 'x', intersect: false }
@@ -502,7 +537,7 @@ async function loadIndicator(item, progressCb) {
     // スケルトン非表示 → チャート表示
     skelEl.style.display = 'none';
     chartEl.style.display = 'block';
-    drawChart(`chart-${item.key}`, data, item.color);
+    drawChart(`chart-${item.key}`, data, item.color, item.unit);
 
   } catch (e) {
     const statusEl = document.getElementById(`status-${item.key}`);
