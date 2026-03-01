@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>建設機械市場指標ダッシュボード</title>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&family=DM+Mono:wght@400;500&family=Bebas+Neue&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #13161e;
+    --surface2: #1a1e29;
+    --border: #252a38;
+    --accent: #e8c84a;
+    --accent2: #4a9ee8;
+    --accent3: #e8714a;
+    --text: #e8ecf4;
+    --text-dim: #6b7494;
+    --text-mid: #9da5bf;
+    --green: #4ae8a0;
+    --red: #e84a6b;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Noto Sans JP', sans-serif;
+    font-weight: 300;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── ヘッダー ── */
+  header {
+    padding: 48px 48px 32px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    position: relative;
+  }
+  header::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2), var(--accent3));
+  }
+  .header-left h1 {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: clamp(28px, 4vw, 52px);
+    letter-spacing: 0.08em;
+    color: var(--text);
+    line-height: 1;
+  }
+  .header-left .subtitle {
+    font-size: 11px;
+    letter-spacing: 0.2em;
+    color: var(--text-dim);
+    margin-top: 6px;
+    text-transform: uppercase;
+  }
+  .header-right {
+    text-align: right;
+  }
+  .update-label {
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+  }
+  .update-time {
+    font-family: 'DM Mono', monospace;
+    font-size: 13px;
+    color: var(--accent);
+    margin-top: 4px;
+  }
+  .loading-bar {
+    width: 100%;
+    height: 2px;
+    background: var(--border);
+    margin-top: 8px;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .loading-bar-inner {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.5s ease;
+    border-radius: 2px;
+  }
+
+  /* ── カテゴリラベル ── */
+  .category-header {
+    padding: 32px 48px 0;
+    font-size: 10px;
+    letter-spacing: 0.25em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .category-header::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  .cat-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+  }
+
+  /* ── グリッド ── */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    margin: 24px 48px 0;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  /* ── カード ── */
+  .card {
+    background: var(--surface);
+    padding: 28px 28px 20px;
+    position: relative;
+    transition: background 0.2s;
+  }
+  .card:hover {
+    background: var(--surface2);
+  }
+  .card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 20px;
+  }
+  .card-title {
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    font-weight: 400;
+  }
+  .card-unit {
+    font-size: 13px;
+    color: var(--text-mid);
+    margin-top: 5px;
+    font-family: 'DM Mono', monospace;
+    letter-spacing: 0.05em;
+    font-weight: 400;
+  }
+  .card-value-block {
+    text-align: right;
+  }
+  .card-value {
+    font-family: 'DM Mono', monospace;
+    font-size: 28px;
+    font-weight: 500;
+    color: var(--text);
+    line-height: 1;
+    letter-spacing: -0.02em;
+  }
+  .card-date {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    font-family: 'DM Mono', monospace;
+    letter-spacing: 0.05em;
+  }
+  .card-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 2px;
+    margin-top: 6px;
+  }
+  .card-status.loading {
+    background: rgba(107,116,148,0.15);
+    color: var(--text-dim);
+  }
+  .card-status.ok {
+    background: rgba(74,232,160,0.1);
+    color: var(--green);
+  }
+  .card-status.error {
+    background: rgba(232,74,107,0.1);
+    color: var(--red);
+  }
+  .status-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+  .status-dot.static { animation: none; }
+
+  /* ── チャート ── */
+  .chart-wrap {
+    position: relative;
+    height: 140px;
+    margin: 0 -4px;
+  }
+
+  /* ── フッター ── */
+  footer {
+    padding: 32px 48px;
+    margin-top: 48px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .footer-note {
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+  }
+  .footer-sources {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-align: right;
+    line-height: 1.8;
+  }
+  .footer-sources span {
+    color: var(--text-mid);
+  }
+
+  /* ── スケルトン ── */
+  @keyframes shimmer {
+    0% { background-position: -400px 0; }
+    100% { background-position: 400px 0; }
+  }
+  .skeleton {
+    background: linear-gradient(90deg, var(--surface) 25%, var(--surface2) 50%, var(--surface) 75%);
+    background-size: 400px 100%;
+    animation: shimmer 1.4s ease infinite;
+    border-radius: 2px;
+  }
+  .skeleton-value { width: 110px; height: 28px; display: inline-block; }
+  .skeleton-chart { width: 100%; height: 140px; }
+
+  /* ── レスポンシブ ── */
+  @media (max-width: 768px) {
+    header, .category-header, .grid, footer {
+      padding-left: 20px;
+      padding-right: 20px;
+      margin-left: 0;
+      margin-right: 0;
+    }
+    .grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <h1>建設機械市場指標</h1>
+    <div class="subtitle">Construction Machinery Market Indicators Dashboard</div>
+  </div>
+  <div class="header-right">
+    <div class="update-label">Last Updated</div>
+    <div class="update-time" id="updateTime">—</div>
+    <div class="loading-bar"><div class="loading-bar-inner" id="loadingBar"></div></div>
+  </div>
+</header>
+
+<div id="dashboardRoot"></div>
+
+<footer>
+  <div class="footer-note">© 建設機械市場指標ダッシュボード｜毎週月曜自動更新</div>
+  <div class="footer-sources">
+    <span>DATA SOURCES:</span><br>
+    FRED (St. Louis Fed) / Eurostat / OECD / freegoldapi.com
+  </div>
+</footer>
+
+<script>
+// ════════════════════════════════════════════════════════
+// 設定: スプレッドシートID & シート名マッピング
+// ════════════════════════════════════════════════════════
+const SHEET_ID = '12djZFhCTuBJYlwnBbhSJkxpg3e4TT1hgwQoVeELYyd0';
+
+const INDICATORS = [
+  {
+    category: '貴金属・エネルギー',
+    items: [
+      { key: '金価格',      label: '金価格',      unit: 'USD / oz',   color: '#e8c84a', sheetName: '金価格',      col: 1 },
+      { key: '銅価格',      label: '銅価格',      unit: 'USD / lb',   color: '#e8714a', sheetName: '銅価格',      col: 1 },
+      { key: '原油WTI',     label: 'WTI原油',     unit: 'USD / bbl',  color: '#4a9ee8', sheetName: '原油価格WTI', col: 1 },
+    ]
+  },
+  {
+    category: '資源・素材',
+    items: [
+      { key: '石炭価格',    label: '石炭価格',    unit: 'USD / ton',  color: '#9da5bf', sheetName: '石炭価格',    col: 1 },
+      { key: '鉄鉱石価格',  label: '鉄鉱石価格',  unit: 'USD / dmtu', color: '#c47ae8', sheetName: '鉄鉱石価格',  col: 1 },
+      { key: 'ニッケル価格', label: 'ニッケル価格', unit: 'USD / mt',  color: '#a8e84a', sheetName: 'ニッケル価格', col: 1 },
+    ]
+  },
+  {
+    category: '建設・住宅',
+    items: [
+      { key: '北米住宅着工', label: '北米住宅着工', unit: '千件',  color: '#4ae8a0', sheetName: '北米住宅着工',   col: 1 },
+      { key: '日本住宅着工', label: '日本住宅着工', unit: '戸 / 月', color: '#e84a9d', sheetName: '日本住宅着工',   col: 1 },
+      { key: 'EU建設指数',   label: 'EU住宅着工',    unit: '件 / 月',  color: '#4ae8e8', sheetName: '欧州建設生産指数', col: 1 },
+    ]
+  }
+];
+
+// ════════════════════════════════════════════════════════
+// Google Sheets Public CSV API 経由でデータ取得
+// ════════════════════════════════════════════════════════
+async function fetchSheetData(sheetName) {
+  // 公開スプレッドシートのCSVエクスポートURL
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const text = await resp.text();
+  return parseCSV(text);
+}
+
+function parseCSV(text) {
+  const rows = text.trim().split('\n').map(line =>
+    line.split(',').map(cell => cell.replace(/^"|"$/g, '').trim())
+  );
+  if (rows.length < 2) return [];
+  const header = rows[0];
+  return rows.slice(1).map(r => ({
+    date: r[0],
+    value: parseFloat(r[1])
+  })).filter(d => !isNaN(d.value));
+}
+
+// ════════════════════════════════════════════════════════
+// Chart.js でミニ折れ線グラフを描画
+// ════════════════════════════════════════════════════════
+function drawChart(canvasId, data, color) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx || data.length < 2) return;
+
+  const labels = data.map(d => d.date);
+  const values = data.map(d => d.value);
+
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: color,
+        borderWidth: 1.5,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        pointHoverBackgroundColor: color,
+        tension: 0.3,
+        fill: true,
+        backgroundColor: (ctx) => {
+          const c = ctx.chart.ctx;
+          const g = c.createLinearGradient(0, 0, 0, 140);
+          g.addColorStop(0, color + '28');
+          g.addColorStop(1, color + '00');
+          return g;
+        }
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 600, easing: 'easeInOutQuart' },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          mode: 'index',
+          intersect: false,
+          backgroundColor: '#1a1e29',
+          borderColor: '#252a38',
+          borderWidth: 1,
+          titleColor: '#6b7494',
+          bodyColor: '#e8ecf4',
+          titleFont: { family: 'DM Mono', size: 10 },
+          bodyFont: { family: 'DM Mono', size: 12 },
+          padding: 10,
+          callbacks: {
+            title: (items) => items[0].label,
+            label: (item) => ' ' + item.raw.toLocaleString()
+          }
+        }
+      },
+      scales: {
+        x: {
+          display: false,
+          grid: { display: false }
+        },
+        y: {
+          display: false,
+          grid: { display: false }
+        }
+      },
+      interaction: { mode: 'nearest', axis: 'x', intersect: false }
+    }
+  });
+}
+
+// ════════════════════════════════════════════════════════
+// カード HTML を生成
+// ════════════════════════════════════════════════════════
+function renderCard(item) {
+  return `
+    <div class="card" id="card-${item.key}">
+      <div class="card-top">
+        <div>
+          <div class="card-title">${item.label}</div>
+          <div class="card-unit">${item.unit}</div>
+          <div class="card-status loading" id="status-${item.key}">
+            <span class="status-dot"></span>LOADING
+          </div>
+        </div>
+        <div class="card-value-block">
+          <div class="card-value" id="val-${item.key}">
+            <span class="skeleton skeleton-value"></span>
+          </div>
+          <div class="card-date" id="date-${item.key}">—</div>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <span class="skeleton skeleton-chart" id="skel-${item.key}"></span>
+        <canvas id="chart-${item.key}" style="display:none;"></canvas>
+      </div>
+    </div>
+  `;
+}
+
+// ════════════════════════════════════════════════════════
+// 初期レンダリング
+// ════════════════════════════════════════════════════════
+function buildDOM() {
+  const root = document.getElementById('dashboardRoot');
+  let html = '';
+
+  INDICATORS.forEach(cat => {
+    html += `
+      <div class="category-header">
+        <span class="cat-dot"></span>${cat.category}
+      </div>
+      <div class="grid">
+        ${cat.items.map(renderCard).join('')}
+      </div>
+    `;
+  });
+
+  root.innerHTML = html;
+}
+
+// ════════════════════════════════════════════════════════
+// データ読み込み & カード更新
+// ════════════════════════════════════════════════════════
+async function loadIndicator(item, progressCb) {
+  try {
+    const data = await fetchSheetData(item.sheetName);
+    if (data.length === 0) throw new Error('No data');
+
+    const latest = data[data.length - 1];
+    const valEl = document.getElementById(`val-${item.key}`);
+    const dateEl = document.getElementById(`date-${item.key}`);
+    const statusEl = document.getElementById(`status-${item.key}`);
+    const skelEl = document.getElementById(`skel-${item.key}`);
+    const chartEl = document.getElementById(`chart-${item.key}`);
+
+    // 値の表示（整数なら カンマ区切り、小数なら小数2桁）
+    const formatted = Number.isInteger(latest.value)
+      ? latest.value.toLocaleString()
+      : latest.value.toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    valEl.textContent = formatted;
+    dateEl.textContent = latest.date;
+    statusEl.className = 'card-status ok';
+    statusEl.innerHTML = '<span class="status-dot static"></span>LIVE';
+
+    // スケルトン非表示 → チャート表示
+    skelEl.style.display = 'none';
+    chartEl.style.display = 'block';
+    drawChart(`chart-${item.key}`, data, item.color);
+
+  } catch (e) {
+    const statusEl = document.getElementById(`status-${item.key}`);
+    const valEl = document.getElementById(`val-${item.key}`);
+    const skelEl = document.getElementById(`skel-${item.key}`);
+    statusEl.className = 'card-status error';
+    statusEl.innerHTML = '<span class="status-dot static"></span>ERROR';
+    valEl.textContent = '—';
+    if (skelEl) skelEl.style.display = 'none';
+  } finally {
+    progressCb();
+  }
+}
+
+// ════════════════════════════════════════════════════════
+// メイン
+// ════════════════════════════════════════════════════════
+async function main() {
+  buildDOM();
+
+  const allItems = INDICATORS.flatMap(c => c.items);
+  const total = allItems.length;
+  let done = 0;
+
+  const bar = document.getElementById('loadingBar');
+  const updateTime = document.getElementById('updateTime');
+  updateTime.textContent = new Date().toLocaleDateString('ja-JP', {
+    year: 'numeric', month: '2-digit', day: '2-digit'
+  }).replace(/\//g, '.');
+
+  const progressCb = () => {
+    done++;
+    bar.style.width = (done / total * 100) + '%';
+  };
+
+  // 並列でデータ取得
+  await Promise.all(allItems.map(item => loadIndicator(item, progressCb)));
+}
+
+main();
+</script>
+</body>
+</html>
