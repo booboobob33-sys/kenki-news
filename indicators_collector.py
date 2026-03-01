@@ -117,65 +117,7 @@ def fetch_gold_price(start_year=2015):
     """
     results = []
 
-    # ── ソース1: FREDのWorld Bank金価格 (PWLDGOLD→GOLDAMGBD228NLBM後継)
-    # FREDで月次金価格として確実に存在するもの: GOLDAMGBD228NLBM廃止後は
-    # "Gold Fixing Price 10:30 A.M. (London time) in London Bullion Market"
-    # series_id: GOLDAMGBD228NLBM → 廃止
-    # 代替: ICE Benchmark Administration 提供の "GOLDAMGBD228NLBM" 後継なし
-    # → World Bank Commodity Price: PGOLD (USD per troy oz, monthly)
-    try:
-        url = "https://api.stlouisfed.org/fred/series/observations"
-        params = {
-            "series_id":         "GOLDAMGBD228NLBM",
-            "api_key":           FRED_API_KEY,
-            "file_type":         "json",
-            "sort_order":        "asc",
-            "observation_start": f"{start_year}-01-01",
-        }
-        resp = requests.get(url, params=params, timeout=15)
-        if resp.status_code == 200:
-            obs = resp.json().get("observations", [])
-            for o in obs:
-                val = o.get("value", ".")
-                if val == ".":
-                    continue
-                results.append((o["date"], float(val)))
-    except Exception:
-        pass
-
-    if results:
-        results.sort(key=lambda x: x[0])
-        safe_print(f"  [GOLD] FRED GOLDAMGBD228NLBM: {len(results)}件取得")
-        return results
-
-    # ── ソース2: FRED World Bank Gold Price (PWLDGOLD)
-    try:
-        for sid in ["PWLDGOLD", "GOLDPMGBD228NLBM"]:
-            url = "https://api.stlouisfed.org/fred/series/observations"
-            params = {
-                "series_id":         sid,
-                "api_key":           FRED_API_KEY,
-                "file_type":         "json",
-                "sort_order":        "asc",
-                "observation_start": f"{start_year}-01-01",
-            }
-            resp = requests.get(url, params=params, timeout=15)
-            if resp.status_code == 200:
-                obs = resp.json().get("observations", [])
-                tmp = []
-                for o in obs:
-                    val = o.get("value", ".")
-                    if val == ".":
-                        continue
-                    tmp.append((o["date"], float(val)))
-                if tmp:
-                    tmp.sort(key=lambda x: x[0])
-                    safe_print(f"  [GOLD] FRED {sid}: {len(tmp)}件取得")
-                    return tmp
-    except Exception:
-        pass
-
-    # ── ソース3: ECB API 金/USD価格 (月次、最新まで)
+    # ── ソース1: ECB API 金/USD価格 (月次・最新まで確実に取得可能)
     try:
         url = "https://data-api.ecb.europa.eu/service/data/EXR/M.XAU.USD.SP00.A"
         params = {
@@ -185,9 +127,7 @@ def fetch_gold_price(start_year=2015):
         resp = requests.get(url, params=params, timeout=20,
                             headers={"Accept": "text/csv"})
         if resp.status_code == 200 and resp.text.strip():
-            tmp = []
             lines = resp.text.strip().split("\n")
-            # ヘッダー行を探してTIME_PERIOD/OBS_VALUEの列インデックスを特定
             header = [h.strip().strip('"') for h in lines[0].split(",")]
             try:
                 ti = header.index("TIME_PERIOD")
@@ -199,26 +139,45 @@ def fetch_gold_price(start_year=2015):
                 if len(parts) <= max(ti, vi):
                     continue
                 try:
-                    period = parts[ti]  # "2020-01"
+                    period = parts[ti]
                     val = float(parts[vi])
                     year = int(period[:4])
                     if year < start_year:
                         continue
-                    # Gold/USD from ECB is price of 1 troy oz in USD
-                    # ECB series XAU/USD = USD per troy oz (inverted: need 1/val * 1000?)
-                    # 実際にはXAU=1 oz, EXR gives USD per 1 XAU → そのまま使える
-                    date_str = period + "-01"
-                    tmp.append((date_str, val))
+                    results.append((period[:7] + "-01", val))
                 except Exception:
                     continue
-            if tmp:
-                tmp.sort(key=lambda x: x[0])
-                safe_print(f"  [GOLD] ECB XAU/USD: {len(tmp)}件取得")
-                return tmp
+            if results:
+                results.sort(key=lambda x: x[0])
+                safe_print(f"  [GOLD] ECB XAU/USD: {len(results)}件取得")
+                return results
     except Exception as e:
         safe_print(f"  [WARN] ECB gold: {e}")
 
-    # ── ソース4: GitHub datasets CSV (フォールバック、〜2025-09)
+    # ── ソース2: FRED 金価格系（複数series試行）
+    try:
+        for sid in ["GOLDAMGBD228NLBM", "GOLDPMGBD228NLBM", "PWLDGOLD"]:
+            url = "https://api.stlouisfed.org/fred/series/observations"
+            params = {
+                "series_id":         sid,
+                "api_key":           FRED_API_KEY,
+                "file_type":         "json",
+                "sort_order":        "asc",
+                "observation_start": f"{start_year}-01-01",
+            }
+            resp = requests.get(url, params=params, timeout=15)
+            if resp.status_code == 200:
+                obs = resp.json().get("observations", [])
+                tmp = [(o["date"], float(o["value"])) for o in obs
+                       if o.get("value", ".") != "."]
+                if tmp:
+                    tmp.sort(key=lambda x: x[0])
+                    safe_print(f"  [GOLD] FRED {sid}: {len(tmp)}件取得")
+                    return tmp
+    except Exception:
+        pass
+
+    # ── ソース3: GitHub datasets CSV (フォールバック、〜2025-09)
     try:
         url = "https://raw.githubusercontent.com/datasets/gold-prices/main/data/monthly.csv"
         resp = requests.get(url, timeout=15)
@@ -396,6 +355,122 @@ def fetch_estat_housing(start_year=2015):
 # =============================================================================
 # Eurostat API（欧州建設生産指数）
 # =============================================================================
+def fetch_japan_housing(start_year=2015):
+    """
+    日本の新設住宅着工戸数（月次・絶対値）を取得。
+    ソース優先順:
+      1. OECD SDMX API: 月次着工戸数（PRMNTO01.JPN.ST.M）
+      2. e-Stat APIフォールバック（statsDataId複数試行）
+    戻り値: [(date_str, value_float), ...] 古い順
+    """
+    # ── ソース1: OECD SDMX REST API（月次着工件数・絶対値）
+    # PRMNTO01 = Dwellings Started, seasonally adjusted / WSCNDW01 = Work started
+    # ST = Absolute values（絶対値）
+    for dataset, measure in [
+        ("OECD.SDD.STES,DSD_STES@DF_MEI_BTS", "PRMNTO01.JPN.ST.M"),
+        ("OECD.SDD.STES,DSD_STES@DF_MEI_BTS", "WSCNDW01.JPN.ST.M"),
+        ("OECD.SDD.STES,DSD_STES@DF_CLI",     "PRMNTO01.JPN.ST.M"),
+    ]:
+        try:
+            url = f"https://sdmx.oecd.org/public/rest/data/{dataset}/{measure}"
+            params = {
+                "startPeriod": f"{start_year}-01",
+                "format": "csvfilewithlabels",
+            }
+            resp = requests.get(url, params=params, timeout=25,
+                                headers={"Accept": "text/csv"})
+            if resp.status_code != 200 or not resp.text.strip():
+                continue
+            lines = resp.text.strip().split("\n")
+            header = [h.strip().strip('"') for h in lines[0].split(",")]
+            try:
+                ti = header.index("TIME_PERIOD")
+                vi = header.index("OBS_VALUE")
+            except ValueError:
+                ti, vi = 0, 1
+            results = []
+            for line in lines[1:]:
+                parts = [p.strip().strip('"') for p in line.split(",")]
+                if len(parts) <= max(ti, vi):
+                    continue
+                try:
+                    period = parts[ti]   # "2020-01"
+                    val = float(parts[vi])
+                    year = int(period[:4])
+                    if year < start_year:
+                        continue
+                    results.append((period[:7] + "-01", val))
+                except Exception:
+                    continue
+            if results:
+                results.sort(key=lambda x: x[0])
+                safe_print(f"  [OECD] 日本住宅着工({measure}): {len(results)}件取得")
+                return results
+        except Exception as e:
+            safe_print(f"  [WARN] OECD {measure}: {e}")
+
+    # ── ソース2: e-Stat API（複数のstatsDataIdを試行）
+    # 正しいID候補: 建築着工統計調査・住宅着工統計
+    estat_ids = [
+        "0003103019",  # 新設住宅着工戸数・月次・全国合計
+        "0003103020",
+        "0003103021",
+        "0003102933",
+        "0003088023",
+    ]
+    for stats_id in estat_ids:
+        try:
+            url = "https://api.e-stat.go.jp/rest/3.0/app/json/getStatsData"
+            params = {
+                "appId":             ESTAT_API_KEY,
+                "statsDataId":       stats_id,
+                "metaGetFlg":        "N",
+                "cntGetFlg":         "N",
+                "explanationGetFlg": "N",
+                "limit":             500,
+                "startPosition":     1,
+            }
+            resp = requests.get(url, params=params, timeout=20)
+            resp.raise_for_status()
+            data = resp.json()
+            status = data.get("GET_STATS_DATA", {}).get("RESULT", {}).get("STATUS", 1)
+            if status != 0:
+                continue
+            values = (data.get("GET_STATS_DATA", {})
+                         .get("STATISTICAL_DATA", {})
+                         .get("DATA_INF", {})
+                         .get("VALUE", []))
+            results = []
+            for item in values:
+                raw_time = item.get("@time", "")
+                val = item.get("$", "")
+                if not val or val in ("-", "***", "..."):
+                    continue
+                try:
+                    year = int(raw_time[:4])
+                    month_str = raw_time[6:8] if len(raw_time) >= 8 else "00"
+                    month = int(month_str)
+                    if year < start_year or month == 0:
+                        continue
+                    area = item.get("@area", "00000")
+                    if area not in ("00000", "0", ""):
+                        continue
+                    results.append((f"{year}-{month:02d}-01", float(val)))
+                except Exception:
+                    continue
+            if results:
+                results.sort(key=lambda x: x[0])
+                seen = {}
+                deduped = [(d, v) for d, v in results if d not in seen and not seen.update({d: True})]
+                safe_print(f"  [e-Stat] 日本住宅着工(ID:{stats_id}): {len(deduped)}件取得")
+                return deduped
+        except Exception as e:
+            safe_print(f"  [WARN] e-Stat {stats_id}: {e}")
+
+    safe_print("  [ERROR] 日本住宅着工: 全ソース取得失敗")
+    return []
+
+
 def fetch_eurostat_construction(start_year=2015):
     """
     Eurostat APIからEU建設生産指数（月次）を取得。
@@ -566,17 +641,21 @@ def collect_and_write(spreadsheet):
     write_bulk(sheet, rows)
     time.sleep(2)
 
-    # ── 7. 日本住宅着工（前年比%・OECD/FRED経由）────────────────────────
-    # WSCNDW01JPM661S = 日本の住宅着工・前年同月比（月次・OECD MEI）
-    # WSCNDW01JPA661S = 年次版（月次がない場合のフォールバック）
-    sheet = get_or_create_sheet(spreadsheet, "日本住宅着工", ["日付", "日本住宅着工 前年比(%)"])
-    rows = fetch_fred("WSCNDW01JPM661S", "日本住宅着工(月次)")
-    if not rows:
-        rows = fetch_fred("WSCNDW01JPA661S", "日本住宅着工(年次)")
+    # ── 7. 日本住宅着工（月次・絶対値）────────────────────────────────
+    # OECD API から月次着工件数（絶対値）を直接取得
+    sheet = get_or_create_sheet(spreadsheet, "日本住宅着工", ["日付", "日本住宅着工 (戸)"])
+    rows = fetch_japan_housing()
     write_bulk(sheet, rows)
     time.sleep(2)
 
-    # ── 8. 欧州建設生産指数（2021=100）────────────────────────────────────
+    # ── 8. ニッケル価格（USD/mt）─────────────────────────────────────────
+    # FRED: PNICKUSDM = London Metal Exchange ニッケル月次価格
+    sheet = get_or_create_sheet(spreadsheet, "ニッケル価格", ["日付", "ニッケル価格 (USD/mt)"])
+    rows = fetch_fred("PNICKUSDM", "ニッケル価格")
+    write_bulk(sheet, rows)
+    time.sleep(2)
+
+    # ── 9. 欧州建設生産指数（2021=100）────────────────────────────────────
     sheet = get_or_create_sheet(spreadsheet, "欧州建設生産指数", ["年月", "EU建設生産指数 (2021=100)"])
     rows = fetch_eurostat_construction()
     write_bulk(sheet, rows)
@@ -699,8 +778,8 @@ def create_all_charts(spreadsheet):
     # 既存グラフシートを全削除してから再作成（重複防止）
     chart_titles = [
         "金価格 (USD/oz)", "銅価格 (USD/lb)", "WTI原油価格 (USD/bbl)",
-        "石炭価格 (USD/ton)", "鉄鉱石価格 (USD/dmtu)", "北米住宅着工 (千件)",
-        "日本住宅着工 前年比(%)", "EU建設生産指数 (2021=100)",
+        "石炭価格 (USD/ton)", "鉄鉱石価格 (USD/dmtu)", "ニッケル価格 (USD/mt)",
+        "北米住宅着工 (千件)", "日本住宅着工 (戸)", "EU建設生産指数 (2021=100)",
     ]
     delete_chart_sheets(spreadsheet, chart_titles)
     time.sleep(3)  # 削除後に少し待機
@@ -710,8 +789,9 @@ def create_all_charts(spreadsheet):
         ("原油価格WTI",  "WTI原油価格 (USD/bbl)"),
         ("石炭価格",     "石炭価格 (USD/ton)"),
         ("鉄鉱石価格",   "鉄鉱石価格 (USD/dmtu)"),
+        ("ニッケル価格", "ニッケル価格 (USD/mt)"),
         ("北米住宅着工", "北米住宅着工 (千件)"),
-        ("日本住宅着工", "日本住宅着工 前年比(%)"),
+        ("日本住宅着工", "日本住宅着工 (戸)"),
         ("欧州建設生産指数", "EU建設生産指数 (2021=100)"),
     ]
     for sheet_name, title in charts:
