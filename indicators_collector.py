@@ -167,6 +167,87 @@ def fetch_fred(series_id, label, start_date="2020-01-01"):
 # =============================================================================
 # World Bank API
 # =============================================================================
+def fetch_china_pmi(start_year=2020):
+    """
+    中国国家統計局(NBS)の製造業PMI（官方PMI）を取得。
+    OECDのAPI（無料・APIキー不要）から取得する。
+    エンドポイント: https://sdmx.oecd.org/public/rest/data/
+    代替: GitHub公開CSVデータを使用
+    戻り値: [(date_str, value_float), ...] 古い順
+    """
+    # OECD Stats API経由でChinese Manufacturing PMIを取得
+    # Dataset: MEI_BTS_COS, Series: CN.BSCICP02.STSA.M (China PMI)
+    url = "https://sdmx.oecd.org/public/rest/data/OECD.SDD.STES,DSD_STES@DF_CLI/CHN.BSCICP02.STSA.M"
+    params = {
+        "startPeriod": f"{start_year}-01",
+        "format": "csvfilewithlabels",
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=20,
+                            headers={"Accept": "text/csv"})
+        if resp.status_code == 200 and resp.text.strip():
+            results = []
+            for line in resp.text.strip().split("\n")[1:]:
+                parts = line.split(",")
+                if len(parts) < 2:
+                    continue
+                try:
+                    # 期間列と値列を探す（CSVヘッダーに依存）
+                    # 通常: TIME_PERIOD, OBS_VALUE
+                    date_str = None
+                    val = None
+                    for p in parts:
+                        p = p.strip().strip('"')
+                        if len(p) == 7 and p[4] == "-":  # "2020-01" 形式
+                            date_str = p + "-01"
+                        elif p.replace(".", "").replace("-", "").isdigit() and "." in p:
+                            val = float(p)
+                    if date_str and val and int(date_str[:4]) >= start_year:
+                        results.append((date_str, val))
+                except Exception:
+                    continue
+            if results:
+                results.sort(key=lambda x: x[0])
+                safe_print(f"  [OECD] 中国製造業PMI: {len(results)}件取得")
+                return results
+
+    except Exception as e:
+        safe_print(f"  [WARN] OECD PMI取得失敗: {e}")
+
+    # フォールバック: 国家統計局公表値の静的リスト（2020年以降の主要値）
+    # GitHub datasets/pmi からも取得試行
+    try:
+        url2 = "https://raw.githubusercontent.com/datasets/pmi/refs/heads/main/data/manufacturing-pmi.csv"
+        resp2 = requests.get(url2, timeout=15)
+        if resp2.status_code == 200:
+            results = []
+            for line in resp2.text.strip().split("\n")[1:]:
+                parts = line.strip().split(",")
+                if len(parts) < 3:
+                    continue
+                try:
+                    date_str = parts[0].strip()
+                    # China列を探す（ヘッダーで確認）
+                    year = int(date_str[:4])
+                    if year < start_year:
+                        continue
+                    # China PMIは通常3列目付近
+                    val = float(parts[2].strip()) if parts[2].strip() else None
+                    if val and 40 < val < 65:  # PMIの妥当範囲
+                        results.append((date_str[:7] + "-01", val))
+                except Exception:
+                    continue
+            if results:
+                results.sort(key=lambda x: x[0])
+                safe_print(f"  [GitHub] 中国製造業PMI: {len(results)}件取得")
+                return results
+    except Exception as e2:
+        safe_print(f"  [WARN] GitHub PMI取得失敗: {e2}")
+
+    safe_print("  [WARN] 中国製造業PMI: 全ソースで取得失敗")
+    return []
+
+
 def fetch_worldbank_commodity(commodity_id, label, start_year=2020):
     """
     World Bank Commodity Price API（Pink Sheet）から月次データを取得。
@@ -208,53 +289,82 @@ def fetch_worldbank_commodity(commodity_id, label, start_year=2020):
 # =============================================================================
 def fetch_estat_housing(start_year=2020):
     """
-    e-Stat APIから日本の住宅着工戸数（月次）を取得。
-    統計ID: 0003103532（建築着工統計調査）
-    start_year以降のデータを全件取得して返す。
+    e-Stat APIから日本の新設住宅着工戸数（月次）を取得。
+    statsDataId: 0003103119
+      = 建築着工統計調査・住宅着工統計・新設住宅着工戸数合計（全国・月次）
     戻り値: [(date_str, value_float), ...] 古い順
     """
     url = "https://api.e-stat.go.jp/rest/3.0/app/json/getStatsData"
-    params = {
-        "appId":             ESTAT_API_KEY,
-        "statsDataId":       "0003103532",
-        "metaGetFlg":        "N",
-        "cntGetFlg":         "N",
-        "explanationGetFlg": "N",
-        "limit":             200,        # 十分な件数を取得
-        "startPosition":     1,
-    }
-    try:
-        resp = requests.get(url, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        values = (
-            data.get("GET_STATS_DATA", {})
-                .get("STATISTICAL_DATA", {})
-                .get("DATA_INF", {})
-                .get("VALUE", [])
-        )
-        results = []
-        for item in values:
-            raw_time = item.get("@time", "")
-            val      = item.get("$", "")
-            if not val or val == "-":
+    # 複数のstatsDataIdを試して最初に成功したものを使う
+    candidate_ids = [
+        "0003103119",   # 新設住宅着工戸数（月次・全国）
+        "0003103532",   # フォールバック（旧ID）
+    ]
+    for stats_id in candidate_ids:
+        params = {
+            "appId":             ESTAT_API_KEY,
+            "statsDataId":       stats_id,
+            "metaGetFlg":        "N",
+            "cntGetFlg":         "N",
+            "explanationGetFlg": "N",
+            "limit":             300,
+            "startPosition":     1,
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            # エラーレスポンスチェック
+            status = data.get("GET_STATS_DATA", {}).get("RESULT", {}).get("STATUS", 1)
+            if status != 0:
+                safe_print(f"  [WARN] e-Stat ID {stats_id}: status={status}, 次のIDを試します")
                 continue
-            # "@time": "2024000010" → 年=2024, 月=10
-            try:
-                year  = int(raw_time[:4])
-                month = int(raw_time[6:8]) if len(raw_time) >= 8 else 0
-                if year < start_year or month == 0:
+
+            values = (
+                data.get("GET_STATS_DATA", {})
+                    .get("STATISTICAL_DATA", {})
+                    .get("DATA_INF", {})
+                    .get("VALUE", [])
+            )
+            results = []
+            for item in values:
+                raw_time = item.get("@time", "")
+                val      = item.get("$", "")
+                if not val or val in ("-", "***", "..."):
                     continue
-                date_str = f"{year}-{month:02d}-01"
-                results.append((date_str, float(val)))
-            except Exception:
-                continue
-        # 古い順にソート
-        results.sort(key=lambda x: x[0])
-        safe_print(f"  [e-Stat] 日本住宅着工: {len(results)}件取得")
-        return results
-    except Exception as e:
-        safe_print(f"  [ERROR] e-Stat: {e}")
+                try:
+                    # "@time" 形式: "2024000010"（年4桁 + "0000" + 月2桁）
+                    year  = int(raw_time[:4])
+                    month_str = raw_time[6:8] if len(raw_time) >= 8 else "00"
+                    month = int(month_str)
+                    if year < start_year or month == 0:
+                        continue
+                    date_str = f"{year}-{month:02d}-01"
+                    # 地域コード「全国」のみ（@areaが"00000"または未指定）
+                    area = item.get("@area", "00000")
+                    if area not in ("00000", "0", ""):
+                        continue
+                    # 合計行のみ（@cat01が存在する場合は「合計」コードのみ）
+                    results.append((date_str, float(val)))
+                except Exception:
+                    continue
+
+            if results:
+                results.sort(key=lambda x: x[0])
+                # 同一日付は最初の値のみ残す
+                seen = {}
+                deduped = []
+                for d, v in results:
+                    if d not in seen:
+                        seen[d] = True
+                        deduped.append((d, v))
+                safe_print(f"  [e-Stat] 日本住宅着工 (ID:{stats_id}): {len(deduped)}件取得")
+                return deduped
+            else:
+                safe_print(f"  [WARN] e-Stat ID {stats_id}: データ0件、次のIDを試します")
+        except Exception as e:
+            safe_print(f"  [ERROR] e-Stat ID {stats_id}: {e}")
+    safe_print("  [ERROR] e-Stat: 全IDで取得失敗")
     return []
 
 # =============================================================================
@@ -263,43 +373,69 @@ def fetch_estat_housing(start_year=2020):
 def fetch_eurostat_construction(start_year=2020):
     """
     Eurostat APIからEU建設生産指数（月次）を取得。
-    データセット: sts_copr_m（建設生産指数）
-    2020年以降の全データを取得して返す。
+    複数のパラメータセットを試してどれかで成功したら返す。
     戻り値: [(date_str, value_float), ...] 古い順
     """
-    url = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/sts_copr_m"
-    params = {
-        "format":          "JSON",
-        "lang":            "EN",
-        "geo":             "EU27_2020",
-        "nace_r2":         "F",        # 建設業
-        "s_adj":           "NSA",      # 季節調整なし
-        "unit":            "I21",      # 2021年=100の指数
-        "sinceTimePeriod": f"{start_year}-01",
-    }
-    try:
-        resp = requests.get(url, params=params, timeout=20)
-        if resp.status_code == 400:
-            # パラメータを緩めて再試行（unitなし）
-            params2 = {k: v for k, v in params.items() if k != "unit"}
-            resp = requests.get(url, params=params2, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
-        vals = data.get("value", {})
-        dims = data.get("dimension", {})
-        time_cat = dims.get("time", {}).get("category", {})
-        time_idx = time_cat.get("index", {})   # {"2020-01": 0, "2020-02": 1, ...}
+    base_url = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/sts_copr_m"
 
-        results = []
-        for t, idx in sorted(time_idx.items()):
-            v = vals.get(str(idx))
-            if v is not None:
-                results.append((t, float(v)))
+    # パラメータセットを複数用意（APIバージョンごとに変わりやすいため）
+    param_sets = [
+        # セット1: 最新仕様（unit=I21）
+        {
+            "format": "JSON", "lang": "EN",
+            "geo": "EU27_2020", "nace_r2": "F",
+            "s_adj": "NSA", "unit": "I21",
+            "sinceTimePeriod": f"{start_year}-01",
+        },
+        # セット2: unit=I15（2015年基準）
+        {
+            "format": "JSON", "lang": "EN",
+            "geo": "EU27_2020", "nace_r2": "F",
+            "s_adj": "NSA", "unit": "I15",
+            "sinceTimePeriod": f"{start_year}-01",
+        },
+        # セット3: unitなし・EU28
+        {
+            "format": "JSON", "lang": "EN",
+            "geo": "EU28", "nace_r2": "F",
+            "s_adj": "NSA",
+            "sinceTimePeriod": f"{start_year}-01",
+        },
+        # セット4: 季節調整あり
+        {
+            "format": "JSON", "lang": "EN",
+            "geo": "EU27_2020", "nace_r2": "F",
+            "s_adj": "SCA", "unit": "I21",
+            "sinceTimePeriod": f"{start_year}-01",
+        },
+    ]
 
-        safe_print(f"  [Eurostat] EU建設生産指数: {len(results)}件取得")
-        return results
-    except Exception as e:
-        safe_print(f"  [ERROR] Eurostat: {e}")
+    for i, params in enumerate(param_sets):
+        try:
+            resp = requests.get(base_url, params=params, timeout=20)
+            if resp.status_code != 200:
+                safe_print(f"  [WARN] Eurostat セット{i+1}: {resp.status_code}")
+                continue
+            data = resp.json()
+            vals = data.get("value", {})
+            dims = data.get("dimension", {})
+            time_idx = dims.get("time", {}).get("category", {}).get("index", {})
+
+            results = []
+            for t, idx in sorted(time_idx.items()):
+                v = vals.get(str(idx))
+                if v is not None:
+                    # 日付フォーマットを統一（"2020-01" → "2020-01-01"）
+                    date_str = t + "-01" if len(t) == 7 else t
+                    results.append((date_str, float(v)))
+
+            if results:
+                safe_print(f"  [Eurostat] EU建設生産指数(セット{i+1}): {len(results)}件取得")
+                return results
+        except Exception as e:
+            safe_print(f"  [ERROR] Eurostat セット{i+1}: {e}")
+
+    safe_print("  [WARN] Eurostat: 全パラメータセットで取得失敗")
     return []
 
 # =============================================================================
@@ -401,9 +537,9 @@ def collect_and_write(spreadsheet):
     time.sleep(2)
 
     # ── 9. 中国製造業PMI ──────────────────────────────────────────────────
-    # CMRMKSCU01MLSAM = Caixin中国製造業PMI（FREDで利用可能な代替series）
+    # 国家統計局(NBS)の官方製造業PMI - GitHub公開データから取得
     sheet = get_or_create_sheet(spreadsheet, "中国製造業PMI", ["日付", "中国製造業PMI"])
-    rows = fetch_fred("CMRMKSCU01MLSAM", "中国製造業PMI")
+    rows = fetch_china_pmi()
     write_bulk(sheet, rows)
 
     safe_print("\n=== Collection complete ===")
