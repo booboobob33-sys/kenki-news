@@ -108,84 +108,88 @@ def append_if_new(sheet, row_data, date_str):
 # =============================================================================
 # FRED API 共通取得関数
 # =============================================================================
-def fetch_fred(series_id, label):
+def fetch_fred(series_id, label, start_date="2020-01-01"):
     """
-    FRED APIから最新値を1件取得して返す。
-    戻り値: (date_str, value_float) or (None, None)
+    FRED APIから過去データを複数件取得して返す。
+    戻り値: [(date_str, value_float), ...] 古い順
     """
     url = "https://api.stlouisfed.org/fred/series/observations"
     params = {
-        "series_id":        series_id,
-        "api_key":          FRED_API_KEY,
-        "file_type":        "json",
-        "sort_order":       "desc",
-        "limit":            1,
-        "observation_start": "2020-01-01",
+        "series_id":         series_id,
+        "api_key":           FRED_API_KEY,
+        "file_type":         "json",
+        "sort_order":        "asc",
+        "observation_start": start_date,
     }
     try:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
         obs = resp.json().get("observations", [])
-        if obs and obs[0]["value"] != ".":
-            date_str = obs[0]["date"]
-            value    = float(obs[0]["value"])
-            safe_print(f"  [FRED] {label}: {value} ({date_str})")
-            return date_str, value
-        safe_print(f"  [WARN] {label}: No data returned")
+        results = [(o["date"], float(o["value"])) for o in obs if o["value"] != "."]
+        safe_print(f"  [FRED] {label}: {len(results)}件取得 (最新: {results[-1] if results else 'なし'})")
+        return results
     except Exception as e:
         safe_print(f"  [ERROR] FRED {label}: {e}")
-    return None, None
+    return []
 
 # =============================================================================
 # World Bank API
 # =============================================================================
-def fetch_worldbank(indicator_code, label):
+def fetch_worldbank_commodity(commodity_id, label, start_year=2020):
     """
-    World Bank APIから最新の月次コモディティ価格を取得。
-    indicator_code例: "PCOALAUUSDM"（石炭）, "PIORECRUSDM"（鉄鉱石）
+    World Bank Commodity Price API（Pink Sheet）から月次データを取得。
+    commodity_id: "COAL_AUS"（石炭）, "IRON_ORE"（鉄鉱石）など
+    エンドポイント: https://api.worldbank.org/v2/en/indicator/PCOALAUUSDM
+    ※ World Bank Commodity APIは indicator形式を使用
     """
-    url = f"https://api.worldbank.org/v2/en/indicator/{indicator_code}"
+    # 石炭・鉄鉱石はFREDからも取得可能なので FRED を代替使用
+    fred_map = {
+        "COAL":     "PCOALAUUSDM",   # 石炭価格 (World Bank series via FRED)
+        "IRON_ORE": "PIORECRUSDM",   # 鉄鉱石価格 (World Bank series via FRED)
+    }
+    series_id = fred_map.get(commodity_id)
+    if not series_id:
+        safe_print(f"  [WARN] Unknown commodity: {commodity_id}")
+        return []
+
+    url = "https://api.stlouisfed.org/fred/series/observations"
     params = {
-        "format":   "json",
-        "mrv":      3,        # 最新3件
-        "frequency": "M",
+        "series_id":         series_id,
+        "api_key":           FRED_API_KEY,
+        "file_type":         "json",
+        "sort_order":        "asc",
+        "observation_start": f"{start_year}-01-01",
     }
     try:
         resp = requests.get(url, params=params, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
-        # World Bank レスポンスは [metadata, [data...]] の形式
-        if len(data) >= 2 and data[1]:
-            for item in data[1]:
-                if item.get("value") is not None:
-                    date_str = item["date"]          # 例: "2024M10"
-                    value    = float(item["value"])
-                    # 表示用に年月フォーマットを整形
-                    display_date = date_str.replace("M", "-")
-                    safe_print(f"  [WB] {label}: {value} ({display_date})")
-                    return display_date, value
-        safe_print(f"  [WARN] WorldBank {label}: No data")
+        obs = resp.json().get("observations", [])
+        results = [(o["date"], float(o["value"])) for o in obs if o["value"] != "."]
+        safe_print(f"  [FRED/WB] {label}: {len(results)}件取得")
+        return results
     except Exception as e:
-        safe_print(f"  [ERROR] WorldBank {label}: {e}")
-    return None, None
+        safe_print(f"  [ERROR] WorldBank/FRED {label}: {e}")
+    return []
 
 # =============================================================================
 # e-Stat API（日本住宅着工）
 # =============================================================================
-def fetch_estat_housing():
+def fetch_estat_housing(start_year=2020):
     """
     e-Stat APIから日本の住宅着工戸数（月次）を取得。
     統計ID: 0003103532（建築着工統計調査）
+    start_year以降のデータを全件取得して返す。
+    戻り値: [(date_str, value_float), ...] 古い順
     """
     url = "https://api.e-stat.go.jp/rest/3.0/app/json/getStatsData"
     params = {
-        "appId":       ESTAT_API_KEY,
-        "statsDataId": "0003103532",  # 建築着工統計
-        "metaGetFlg":  "N",
-        "cntGetFlg":   "N",
+        "appId":             ESTAT_API_KEY,
+        "statsDataId":       "0003103532",
+        "metaGetFlg":        "N",
+        "cntGetFlg":         "N",
         "explanationGetFlg": "N",
-        "limit":       3,
-        "startPosition": 1,
+        "limit":             200,        # 十分な件数を取得
+        "startPosition":     1,
     }
     try:
         resp = requests.get(url, params=params, timeout=15)
@@ -197,136 +201,147 @@ def fetch_estat_housing():
                 .get("DATA_INF", {})
                 .get("VALUE", [])
         )
-        if values:
-            latest = values[0]
-            date_str = latest.get("@time", "").replace("CY", "")  # 例: "2024000010"
-            val      = latest.get("$", "")
-            if val and val != "-":
-                value = float(val)
-                safe_print(f"  [e-Stat] 日本住宅着工: {value}戸 ({date_str})")
-                return date_str, value
-        safe_print("  [WARN] e-Stat: No housing data")
+        results = []
+        for item in values:
+            raw_time = item.get("@time", "")
+            val      = item.get("$", "")
+            if not val or val == "-":
+                continue
+            # "@time": "2024000010" → 年=2024, 月=10
+            try:
+                year  = int(raw_time[:4])
+                month = int(raw_time[6:8]) if len(raw_time) >= 8 else 0
+                if year < start_year or month == 0:
+                    continue
+                date_str = f"{year}-{month:02d}-01"
+                results.append((date_str, float(val)))
+            except Exception:
+                continue
+        # 古い順にソート
+        results.sort(key=lambda x: x[0])
+        safe_print(f"  [e-Stat] 日本住宅着工: {len(results)}件取得")
+        return results
     except Exception as e:
         safe_print(f"  [ERROR] e-Stat: {e}")
-    return None, None
+    return []
 
 # =============================================================================
 # Eurostat API（欧州建設生産指数）
 # =============================================================================
-def fetch_eurostat_construction():
+def fetch_eurostat_construction(start_year=2020):
     """
     Eurostat APIからEU建設生産指数（月次）を取得。
     データセット: sts_copr_m（建設生産指数）
+    2020年以降の全データを取得して返す。
+    戻り値: [(date_str, value_float), ...] 古い順
     """
     url = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/sts_copr_m"
     params = {
-        "format":   "JSON",
-        "lang":     "EN",
-        "geo":      "EU27_2020",
-        "nace_r2":  "F",         # 建設業
-        "s_adj":    "NSA",       # 季節調整なし
-        "unit":     "I21",       # 2021年=100の指数
-        "sinceTimePeriod": "2023-01",
+        "format":          "JSON",
+        "lang":            "EN",
+        "geo":             "EU27_2020",
+        "nace_r2":         "F",        # 建設業
+        "s_adj":           "NSA",      # 季節調整なし
+        "unit":            "I21",      # 2021年=100の指数
+        "sinceTimePeriod": f"{start_year}-01",
     }
     try:
         resp = requests.get(url, params=params, timeout=20)
+        if resp.status_code == 400:
+            # パラメータを緩めて再試行（unitなし）
+            params2 = {k: v for k, v in params.items() if k != "unit"}
+            resp = requests.get(url, params=params2, timeout=20)
         resp.raise_for_status()
-        data  = resp.json()
-        vals  = data.get("value", {})
-        dims  = data.get("dimension", {})
-        times = list(dims.get("time", {}).get("category", {}).get("index", {}).keys())
+        data = resp.json()
+        vals = data.get("value", {})
+        dims = data.get("dimension", {})
+        time_cat = dims.get("time", {}).get("category", {})
+        time_idx = time_cat.get("index", {})   # {"2020-01": 0, "2020-02": 1, ...}
 
-        if vals and times:
-            # 最新のデータを取得（降順でソート）
-            sorted_times = sorted(times, reverse=True)
-            for t in sorted_times:
-                idx = dims["time"]["category"]["index"][t]
-                v   = vals.get(str(idx))
-                if v is not None:
-                    safe_print(f"  [Eurostat] EU建設生産指数: {v} ({t})")
-                    return t, float(v)
-        safe_print("  [WARN] Eurostat: No data")
+        results = []
+        for t, idx in sorted(time_idx.items()):
+            v = vals.get(str(idx))
+            if v is not None:
+                results.append((t, float(v)))
+
+        safe_print(f"  [Eurostat] EU建設生産指数: {len(results)}件取得")
+        return results
     except Exception as e:
         safe_print(f"  [ERROR] Eurostat: {e}")
-    return None, None
+    return []
 
 # =============================================================================
 # 各指標を収集してSheetsに書き込む
 # =============================================================================
+def write_bulk(sheet, rows):
+    """複数行をまとめてSheetsに追記する（重複スキップ）。"""
+    added = 0
+    for date_str, val in rows:
+        if append_if_new(sheet, [date_str, val], date_str):
+            added += 1
+    safe_print(f"  [SHEETS] {added}件追記完了")
+
+
 def collect_and_write(spreadsheet):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     safe_print(f"\n=== Collecting indicators ({today}) ===\n")
 
     # ── 1. 金価格（USD/troy oz）────────────────────────────────────────────
-    sheet = get_or_create_sheet(spreadsheet, "金価格",
-        ["日付", "金価格 (USD/oz)"])
-    date, val = fetch_fred("GOLDAMGBD228NLBM", "金価格")
-    if date and val:
-        append_if_new(sheet, [date, val], date)
+    # GOLDPMGBD228NLBM = ロンドン金午後値決め（GOLDAMGBD228NLBMの後継）
+    sheet = get_or_create_sheet(spreadsheet, "金価格", ["日付", "金価格 (USD/oz)"])
+    rows = fetch_fred("GOLDPMGBD228NLBM", "金価格")
+    write_bulk(sheet, rows)
     time.sleep(2)
 
     # ── 2. 銅価格（USD/lb）────────────────────────────────────────────────
-    sheet = get_or_create_sheet(spreadsheet, "銅価格",
-        ["日付", "銅価格 (USD/lb)"])
-    date, val = fetch_fred("PCOPPUSDM", "銅価格")
-    if date and val:
-        append_if_new(sheet, [date, val], date)
+    sheet = get_or_create_sheet(spreadsheet, "銅価格", ["日付", "銅価格 (USD/lb)"])
+    rows = fetch_fred("PCOPPUSDM", "銅価格")
+    write_bulk(sheet, rows)
     time.sleep(2)
 
     # ── 3. 原油価格 WTI（USD/bbl）─────────────────────────────────────────
-    sheet = get_or_create_sheet(spreadsheet, "原油価格WTI",
-        ["日付", "WTI原油 (USD/bbl)"])
-    date, val = fetch_fred("DCOILWTICO", "原油WTI")
-    if date and val:
-        append_if_new(sheet, [date, val], date)
+    sheet = get_or_create_sheet(spreadsheet, "原油価格WTI", ["日付", "WTI原油 (USD/bbl)"])
+    rows = fetch_fred("DCOILWTICO", "原油WTI")
+    write_bulk(sheet, rows)
     time.sleep(2)
 
     # ── 4. 石炭価格（USD/ton）─────────────────────────────────────────────
-    sheet = get_or_create_sheet(spreadsheet, "石炭価格",
-        ["年月", "石炭価格 (USD/ton)"])
-    date, val = fetch_worldbank("PCOALAUUSDM", "石炭価格")
-    if date and val:
-        append_if_new(sheet, [date, val], date)
+    # PCOALAUUSDM = オーストラリア炭（Newcastle）月次
+    sheet = get_or_create_sheet(spreadsheet, "石炭価格", ["日付", "石炭価格 (USD/ton)"])
+    rows = fetch_worldbank_commodity("COAL", "石炭価格")
+    write_bulk(sheet, rows)
     time.sleep(2)
 
     # ── 5. 鉄鉱石価格（USD/dmtu）─────────────────────────────────────────
-    sheet = get_or_create_sheet(spreadsheet, "鉄鉱石価格",
-        ["年月", "鉄鉱石価格 (USD/dmtu)"])
-    date, val = fetch_worldbank("PIORECRUSDM", "鉄鉱石価格")
-    if date and val:
-        append_if_new(sheet, [date, val], date)
+    # PIORECRUSDM = 鉄鉱石スポット価格（中国向け）月次
+    sheet = get_or_create_sheet(spreadsheet, "鉄鉱石価格", ["日付", "鉄鉱石価格 (USD/dmtu)"])
+    rows = fetch_worldbank_commodity("IRON_ORE", "鉄鉱石価格")
+    write_bulk(sheet, rows)
     time.sleep(2)
 
     # ── 6. 北米住宅着工件数（千件）────────────────────────────────────────
-    sheet = get_or_create_sheet(spreadsheet, "北米住宅着工",
-        ["日付", "北米住宅着工 (千件)"])
-    date, val = fetch_fred("HOUST", "北米住宅着工")
-    if date and val:
-        append_if_new(sheet, [date, val], date)
+    sheet = get_or_create_sheet(spreadsheet, "北米住宅着工", ["日付", "北米住宅着工 (千件)"])
+    rows = fetch_fred("HOUST", "北米住宅着工")
+    write_bulk(sheet, rows)
     time.sleep(2)
 
     # ── 7. 日本住宅着工（戸）──────────────────────────────────────────────
-    sheet = get_or_create_sheet(spreadsheet, "日本住宅着工",
-        ["期間", "日本住宅着工 (戸)"])
-    date, val = fetch_estat_housing()
-    if date and val:
-        append_if_new(sheet, [date, val], date)
+    sheet = get_or_create_sheet(spreadsheet, "日本住宅着工", ["期間", "日本住宅着工 (戸)"])
+    rows = fetch_estat_housing()
+    write_bulk(sheet, rows)
     time.sleep(2)
 
     # ── 8. 欧州建設生産指数（2021=100）────────────────────────────────────
-    sheet = get_or_create_sheet(spreadsheet, "欧州建設生産指数",
-        ["年月", "EU建設生産指数 (2021=100)"])
-    date, val = fetch_eurostat_construction()
-    if date and val:
-        append_if_new(sheet, [date, val], date)
+    sheet = get_or_create_sheet(spreadsheet, "欧州建設生産指数", ["年月", "EU建設生産指数 (2021=100)"])
+    rows = fetch_eurostat_construction()
+    write_bulk(sheet, rows)
     time.sleep(2)
 
     # ── 9. 中国製造業PMI ──────────────────────────────────────────────────
-    sheet = get_or_create_sheet(spreadsheet, "中国製造業PMI",
-        ["日付", "中国製造業PMI"])
-    date, val = fetch_fred("CHPMINDXM", "中国製造業PMI")
-    if date and val:
-        append_if_new(sheet, [date, val], date)
+    # CMRMKSCU01MLSAM = Caixin中国製造業PMI（FREDで利用可能な代替series）
+    sheet = get_or_create_sheet(spreadsheet, "中国製造業PMI", ["日付", "中国製造業PMI"])
+    rows = fetch_fred("CMRMKSCU01MLSAM", "中国製造業PMI")
+    write_bulk(sheet, rows)
 
     safe_print("\n=== Collection complete ===")
 
