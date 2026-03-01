@@ -524,9 +524,13 @@ def collect_and_write(spreadsheet):
     write_bulk(sheet, rows)
     time.sleep(2)
 
-    # ── 7. 日本住宅着工（戸）──────────────────────────────────────────────
-    sheet = get_or_create_sheet(spreadsheet, "日本住宅着工", ["期間", "日本住宅着工 (戸)"])
-    rows = fetch_estat_housing()
+    # ── 7. 日本住宅着工（前年比%・OECD/FRED経由）────────────────────────
+    # WSCNDW01JPM661S = 日本の住宅着工・前年同月比（月次・OECD MEI）
+    # WSCNDW01JPA661S = 年次版（月次がない場合のフォールバック）
+    sheet = get_or_create_sheet(spreadsheet, "日本住宅着工", ["日付", "日本住宅着工 前年比(%)"])
+    rows = fetch_fred("WSCNDW01JPM661S", "日本住宅着工(月次)")
+    if not rows:
+        rows = fetch_fred("WSCNDW01JPA661S", "日本住宅着工(年次)")
     write_bulk(sheet, rows)
     time.sleep(2)
 
