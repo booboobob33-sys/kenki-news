@@ -117,20 +117,33 @@ def _yfinance_gold_monthly(start_year=2015):
         from datetime import date
         start = f"{start_year}-01-01"
         end   = date.today().strftime("%Y-%m-%d")
-        ticker = yf.Ticker("GC=F")
-        hist = ticker.history(start=start, end=end, interval="1d")
-        if hist.empty:
+        # auto_adjust=False で MultiIndex列を回避
+        hist = yf.download("GC=F", start=start, end=end,
+                           interval="1d", auto_adjust=True,
+                           progress=False)
+        if hist is None or hist.empty:
             return {}
         monthly = {}
-        for ts, row in hist.iterrows():
-            # tsはtz-aware Timestampの場合あり
+        # Close列は単純列 or MultiIndex両対応
+        if hasattr(hist.columns, "levels"):
+            # MultiIndex: ("Close", "GC=F") のような場合
+            close_col = [c for c in hist.columns if c[0] == "Close"]
+            if close_col:
+                close_series = hist[close_col[0]]
+            else:
+                close_series = hist.iloc[:, 3]
+        else:
+            close_series = hist["Close"] if "Close" in hist.columns else hist.iloc[:, 3]
+
+        for ts, val in close_series.items():
             try:
+                price = float(val)
+                if price <= 0 or price != price:  # NaN check
+                    continue
                 ym = ts.strftime("%Y%m")
+                monthly.setdefault(ym, []).append(price)
             except Exception:
                 continue
-            close = float(row.get("Close", row.iloc[3]) if hasattr(row, "get") else row[3])
-            if close > 0:
-                monthly.setdefault(ym, []).append(close)
         return monthly
     except ImportError:
         safe_print("  [WARN] yfinance未インストール")
@@ -140,15 +153,61 @@ def _yfinance_gold_monthly(start_year=2015):
         return {}
 
 
+def _stooq_gold_monthly(start_year=2015):
+    """
+    Stooq.com から金価格（GC.F）の日次CSVを取得し月次平均に変換する。
+    認証不要・HTTPS・requests のみで動作。
+    URL: https://stooq.com/q/d/l/?s=gc.f&i=m  (月次足)
+    戻り値: {yyyymm: avg_price} の辞書、または空 {}
+    """
+    try:
+        # 月次足を直接取得（最も確実）
+        url = "https://stooq.com/q/d/l/?s=gc.f&i=m"
+        headers = {
+            "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/120.0 Safari/537.36")
+        }
+        resp = requests.get(url, headers=headers, timeout=20)
+        if resp.status_code != 200 or not resp.text.strip():
+            safe_print(f"  [WARN] Stooq: HTTP {resp.status_code}")
+            return {}
+        lines = resp.text.strip().split("\n")
+        # ヘッダー行: Date,Open,High,Low,Close,Volume
+        monthly = {}
+        for line in lines[1:]:
+            parts = line.strip().split(",")
+            if len(parts) < 5:
+                continue
+            try:
+                date_str = parts[0].strip()          # YYYY-MM-DD
+                close    = float(parts[4].strip())   # Close
+                if close <= 0:
+                    continue
+                year = int(date_str[:4])
+                if year < start_year:
+                    continue
+                ym = date_str[:7].replace("-", "")   # "YYYYMM"
+                monthly[ym] = close                  # 月次足なので1件/月
+            except Exception:
+                continue
+        safe_print(f"  [GOLD] Stooq月次: {len(monthly)}件取得")
+        return monthly
+    except Exception as e:
+        safe_print(f"  [WARN] Stooq gold: {e}")
+        return {}
+
+
 def _imf_pcps_gold_monthly(start_year=2015):
     """
     IMF PCPS SDMX API から金価格月次データを取得。
-    エンドポイント: http://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/PCPS/M.W00.PGOLD.USD
-    通常は当月から1〜2ヶ月遅れで更新。
+    エンドポイント: https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/PCPS/M.W00.PGOLD.USD
+    通常は1〜2ヶ月ラグで更新。
     戻り値: [(date_str, value), ...] または []
     """
     try:
-        url = ("http://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData"
+        # HTTPS に修正（port 80 HTTP は GitHub Actions でブロックされる）
+        url = ("https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData"
                f"/PCPS/M.W00.PGOLD.USD?startPeriod={start_year}")
         resp = requests.get(url, timeout=25,
                             headers={"Accept": "application/json"})
@@ -197,24 +256,24 @@ def fetch_gold_price(start_year=2015):
        → 2022年1月31日にFREDから完全削除済み（ICE著作権）。使用不可。
     ──────────────────────────────────────────────────
     優先順:
-      1. IMF PCPS SDMX API (PGOLD, 月次)
-         http://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/PCPS/M.W00.PGOLD.USD
+      1. IMF PCPS SDMX API (PGOLD, 月次, HTTPS)
          → 通常は1〜2ヶ月ラグで更新。2025年途中まで取得可能。
 
-      2. yfinance GC=F 日次 → 月次平均で IMF の未収録月を補完
-         → 最新月まで取得可能。IMFデータより新しい月のみ追記。
+      2. Stooq.com GC.F 月次CSV（認証不要・HTTPS）
+         → 最新月まで取得可能。IMFより新しい月を補完。
 
-      3. ECB EXR XAU/USD 月次（ユーロ建て→USD変換）
-         → フォールバック。ラグが大きいが公式ソース。
+      3. yfinance GC=F 日次 → 月次平均（インストール済み時のみ）
+         → Stooq失敗時のバックアップ。
 
-      4. GitHub datasets CSV（最終フォールバック）
-         → 2024年末程度まで。
+      4. ECB EXR XAU/USD 月次（フォールバック）
+
+      5. GitHub datasets CSV（最終フォールバック、2024年末程度まで）
 
     戻り値: [(date_str, value_float), ...] 古い順
     """
     combined = {}  # "YYYY-MM-01" -> float
 
-    # ── ソース1: IMF PCPS SDMX（月次公式、1〜2ヶ月ラグ）──────────
+    # ── ソース1: IMF PCPS SDMX（月次公式、HTTPS、1〜2ヶ月ラグ）─────
     imf_data = _imf_pcps_gold_monthly(start_year)
     if imf_data:
         for d, v in imf_data:
@@ -223,25 +282,34 @@ def fetch_gold_price(start_year=2015):
     else:
         safe_print("  [WARN] IMF PCPS: データなし")
 
-    # ── ソース2: yfinance GC=F で IMF の未収録月を補完 ────────────
-    # IMFにあれば使わない月、IMFにない月だけ yfinance から追加
-    yf_monthly = _yfinance_gold_monthly(start_year)
-    if yf_monthly:
+    # ── ソース2: Stooq GC.F 月次（認証不要・IMF未収録月を補完）──────
+    stooq_monthly = _stooq_gold_monthly(start_year)
+    if stooq_monthly:
         added = 0
-        for ym, prices in sorted(yf_monthly.items()):
+        for ym, price in sorted(stooq_monthly.items()):
             date_str = f"{ym[:4]}-{ym[4:6]}-01"
             if date_str not in combined:
-                avg = sum(prices) / len(prices)
-                combined[date_str] = avg
+                combined[date_str] = price
                 added += 1
         if added:
-            safe_print(f"  [GOLD] yfinance GC=F: {added}ヶ月を補完")
+            safe_print(f"  [GOLD] Stooq: {added}ヶ月を補完")
         else:
-            safe_print("  [GOLD] yfinance: IMFデータで全月カバー済み、補完不要")
+            safe_print("  [GOLD] Stooq: IMFデータで全月カバー済み")
     else:
-        safe_print("  [WARN] yfinance: 取得不可")
+        safe_print("  [WARN] Stooq: 取得不可、yfinanceに移行")
+        # ── ソース3: yfinance GC=F（Stooq失敗時のみ）────────────────
+        yf_monthly = _yfinance_gold_monthly(start_year)
+        if yf_monthly:
+            added = 0
+            for ym, prices in sorted(yf_monthly.items()):
+                date_str = f"{ym[:4]}-{ym[4:6]}-01"
+                if date_str not in combined:
+                    combined[date_str] = sum(prices) / len(prices)
+                    added += 1
+            if added:
+                safe_print(f"  [GOLD] yfinance GC=F: {added}ヶ月を補完")
 
-    # ソース1+2 で十分なデータが取れた場合はここで返す
+    # ソース1〜3 でデータが取れた場合はここで返す
     if combined:
         result = sorted(combined.items(), key=lambda x: x[0])
         safe_print(f"  [GOLD] 最終: {len(result)}件（最新: {result[-1][0]}）")
