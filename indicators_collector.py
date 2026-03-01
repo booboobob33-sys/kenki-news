@@ -109,34 +109,142 @@ def append_if_new(sheet, row_data, date_str):
 # =============================================================================
 def fetch_gold_price(start_year=2015):
     """
-    freegoldapi.com から月次金価格データを取得（無料・APIキー不要）。
-    GitHubリポジトリのCSVを直接取得する。
+    金価格（USD/troy oz）月次データを取得。
+    ソース優先順:
+      1. FRED API (FRED series: GOLDAMGBD228NLBM の後継として World Bank PGOLD)
+      2. GitHub datasets CSV (2025-09まで)
     戻り値: [(date_str, value_float), ...] 古い順
     """
-    url = "https://raw.githubusercontent.com/datasets/gold-prices/main/data/monthly.csv"
+    results = []
+
+    # ── ソース1: FREDのWorld Bank金価格 (PWLDGOLD→GOLDAMGBD228NLBM後継)
+    # FREDで月次金価格として確実に存在するもの: GOLDAMGBD228NLBM廃止後は
+    # "Gold Fixing Price 10:30 A.M. (London time) in London Bullion Market"
+    # series_id: GOLDAMGBD228NLBM → 廃止
+    # 代替: ICE Benchmark Administration 提供の "GOLDAMGBD228NLBM" 後継なし
+    # → World Bank Commodity Price: PGOLD (USD per troy oz, monthly)
     try:
+        url = "https://api.stlouisfed.org/fred/series/observations"
+        params = {
+            "series_id":         "GOLDAMGBD228NLBM",
+            "api_key":           FRED_API_KEY,
+            "file_type":         "json",
+            "sort_order":        "asc",
+            "observation_start": f"{start_year}-01-01",
+        }
+        resp = requests.get(url, params=params, timeout=15)
+        if resp.status_code == 200:
+            obs = resp.json().get("observations", [])
+            for o in obs:
+                val = o.get("value", ".")
+                if val == ".":
+                    continue
+                results.append((o["date"], float(val)))
+    except Exception:
+        pass
+
+    if results:
+        results.sort(key=lambda x: x[0])
+        safe_print(f"  [GOLD] FRED GOLDAMGBD228NLBM: {len(results)}件取得")
+        return results
+
+    # ── ソース2: FRED World Bank Gold Price (PWLDGOLD)
+    try:
+        for sid in ["PWLDGOLD", "GOLDPMGBD228NLBM"]:
+            url = "https://api.stlouisfed.org/fred/series/observations"
+            params = {
+                "series_id":         sid,
+                "api_key":           FRED_API_KEY,
+                "file_type":         "json",
+                "sort_order":        "asc",
+                "observation_start": f"{start_year}-01-01",
+            }
+            resp = requests.get(url, params=params, timeout=15)
+            if resp.status_code == 200:
+                obs = resp.json().get("observations", [])
+                tmp = []
+                for o in obs:
+                    val = o.get("value", ".")
+                    if val == ".":
+                        continue
+                    tmp.append((o["date"], float(val)))
+                if tmp:
+                    tmp.sort(key=lambda x: x[0])
+                    safe_print(f"  [GOLD] FRED {sid}: {len(tmp)}件取得")
+                    return tmp
+    except Exception:
+        pass
+
+    # ── ソース3: ECB API 金/USD価格 (月次、最新まで)
+    try:
+        url = "https://data-api.ecb.europa.eu/service/data/EXR/M.XAU.USD.SP00.A"
+        params = {
+            "startPeriod": f"{start_year}-01",
+            "format": "csvfilewithlabels",
+        }
+        resp = requests.get(url, params=params, timeout=20,
+                            headers={"Accept": "text/csv"})
+        if resp.status_code == 200 and resp.text.strip():
+            tmp = []
+            lines = resp.text.strip().split("\n")
+            # ヘッダー行を探してTIME_PERIOD/OBS_VALUEの列インデックスを特定
+            header = [h.strip().strip('"') for h in lines[0].split(",")]
+            try:
+                ti = header.index("TIME_PERIOD")
+                vi = header.index("OBS_VALUE")
+            except ValueError:
+                ti, vi = 0, 1
+            for line in lines[1:]:
+                parts = [p.strip().strip('"') for p in line.split(",")]
+                if len(parts) <= max(ti, vi):
+                    continue
+                try:
+                    period = parts[ti]  # "2020-01"
+                    val = float(parts[vi])
+                    year = int(period[:4])
+                    if year < start_year:
+                        continue
+                    # Gold/USD from ECB is price of 1 troy oz in USD
+                    # ECB series XAU/USD = USD per troy oz (inverted: need 1/val * 1000?)
+                    # 実際にはXAU=1 oz, EXR gives USD per 1 XAU → そのまま使える
+                    date_str = period + "-01"
+                    tmp.append((date_str, val))
+                except Exception:
+                    continue
+            if tmp:
+                tmp.sort(key=lambda x: x[0])
+                safe_print(f"  [GOLD] ECB XAU/USD: {len(tmp)}件取得")
+                return tmp
+    except Exception as e:
+        safe_print(f"  [WARN] ECB gold: {e}")
+
+    # ── ソース4: GitHub datasets CSV (フォールバック、〜2025-09)
+    try:
+        url = "https://raw.githubusercontent.com/datasets/gold-prices/main/data/monthly.csv"
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
-        results = []
-        for line in resp.text.strip().split("\n")[1:]:  # ヘッダースキップ
+        tmp = []
+        for line in resp.text.strip().split("\n")[1:]:
             parts = line.strip().split(",")
             if len(parts) < 2:
                 continue
-            date_str = parts[0].strip()   # 例: "2020-01-01"
+            date_str = parts[0].strip()
             val_str  = parts[1].strip()
             try:
                 year = int(date_str[:4])
                 if year < start_year:
                     continue
-                results.append((date_str, float(val_str)))
+                tmp.append((date_str, float(val_str)))
             except Exception:
                 continue
-        results.sort(key=lambda x: x[0])
-        safe_print(f"  [GOLD] 金価格: {len(results)}件取得")
-        return results
+        if tmp:
+            tmp.sort(key=lambda x: x[0])
+            safe_print(f"  [GOLD] GitHub CSV: {len(tmp)}件取得")
+            return tmp
     except Exception as e:
-        safe_print(f"  [ERROR] 金価格取得失敗: {e}")
-        return []
+        safe_print(f"  [ERROR] 金価格全ソース失敗: {e}")
+
+    return []
 
 
 def fetch_fred(series_id, label, start_date="2015-01-01"):
@@ -480,9 +588,35 @@ def collect_and_write(spreadsheet):
 # =============================================================================
 # グラフ自動生成
 # =============================================================================
+def delete_chart_sheets(spreadsheet, chart_titles):
+    """
+    グラフ専用シート（自動生成されたもの）を全て削除する。
+    グラフシートはsheetType="OBJECT"で判別できる。
+    """
+    try:
+        meta = spreadsheet.fetch_sheet_metadata()
+        sheets_meta = meta.get("sheets", [])
+        delete_requests = []
+        for s in sheets_meta:
+            props = s.get("properties", {})
+            # グラフ専用シートはsheetType == "OBJECT"
+            if props.get("sheetType") == "OBJECT":
+                delete_requests.append({
+                    "deleteSheet": {"sheetId": props["sheetId"]}
+                })
+        if delete_requests:
+            spreadsheet.batch_update({"requests": delete_requests})
+            safe_print(f"  [CHART] 既存グラフシート {len(delete_requests)}枚を削除")
+        else:
+            safe_print(f"  [CHART] 削除対象のグラフシートなし")
+    except Exception as e:
+        safe_print(f"  [WARN] グラフシート削除失敗: {e}")
+
+
 def create_chart(spreadsheet, sheet_name, title, x_col=0, y_col=1):
     """
-    指定シートに折れ線グラフを作成する（既存グラフがあればスキップ）。
+    指定シートに折れ線グラフを作成する。
+    グラフ専用シートは事前にdelete_chart_sheetsで削除済み前提。
     Google Sheets API の batchUpdate を使用。
     """
     try:
@@ -492,18 +626,6 @@ def create_chart(spreadsheet, sheet_name, title, x_col=0, y_col=1):
         return
 
     sheet_id = sheet.id
-
-    # 既存グラフ確認
-    try:
-        existing = spreadsheet.fetch_sheet_metadata()
-        sheets_meta = existing.get("sheets", [])
-        for s in sheets_meta:
-            if s["properties"]["sheetId"] == sheet_id:
-                if s.get("charts"):
-                    safe_print(f"  [CHART] 既存グラフあり、スキップ: {sheet_name}")
-                    return
-    except Exception:
-        pass  # メタデータ取得失敗時はそのまま作成を試みる
 
     # データ行数を取得
     try:
@@ -572,8 +694,16 @@ def create_chart(spreadsheet, sheet_name, title, x_col=0, y_col=1):
 
 
 def create_all_charts(spreadsheet):
-    """全指標のグラフを一括作成する。"""
+    """全指標のグラフを一括作成する。実行前に古いグラフシートを全削除。"""
     safe_print("\n=== Creating charts ===\n")
+    # 既存グラフシートを全削除してから再作成（重複防止）
+    chart_titles = [
+        "金価格 (USD/oz)", "銅価格 (USD/lb)", "WTI原油価格 (USD/bbl)",
+        "石炭価格 (USD/ton)", "鉄鉱石価格 (USD/dmtu)", "北米住宅着工 (千件)",
+        "日本住宅着工 前年比(%)", "EU建設生産指数 (2021=100)",
+    ]
+    delete_chart_sheets(spreadsheet, chart_titles)
+    time.sleep(3)  # 削除後に少し待機
     charts = [
         ("金価格",       "金価格 (USD/oz)"),
         ("銅価格",       "銅価格 (USD/lb)"),
