@@ -5,3 +5,4 @@ notion-client
 beautifulsoup4
 selenium
 webdriver-manager
+yfinance
