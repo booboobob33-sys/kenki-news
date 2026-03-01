@@ -106,48 +106,154 @@ def append_if_new(sheet, row_data, date_str):
 # =============================================================================
 # FRED API 共通取得関数
 # =============================================================================
+def _yfinance_gold_monthly(start_year=2015):
+    """
+    Yahoo Finance (GC=F 金先物) から日次データを取得し月次平均に変換する。
+    ※ yfinance は非公式APIのため、インストール済みの場合のみ動作。
+    戻り値: {yyyymm: [prices...]} の辞書、または空 {}
+    """
+    try:
+        import yfinance as yf
+        from datetime import date
+        start = f"{start_year}-01-01"
+        end   = date.today().strftime("%Y-%m-%d")
+        ticker = yf.Ticker("GC=F")
+        hist = ticker.history(start=start, end=end, interval="1d")
+        if hist.empty:
+            return {}
+        monthly = {}
+        for ts, row in hist.iterrows():
+            # tsはtz-aware Timestampの場合あり
+            try:
+                ym = ts.strftime("%Y%m")
+            except Exception:
+                continue
+            close = float(row.get("Close", row.iloc[3]) if hasattr(row, "get") else row[3])
+            if close > 0:
+                monthly.setdefault(ym, []).append(close)
+        return monthly
+    except ImportError:
+        safe_print("  [WARN] yfinance未インストール")
+        return {}
+    except Exception as e:
+        safe_print(f"  [WARN] yfinance GC=F: {e}")
+        return {}
+
+
+def _imf_pcps_gold_monthly(start_year=2015):
+    """
+    IMF PCPS SDMX API から金価格月次データを取得。
+    エンドポイント: http://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/PCPS/M.W00.PGOLD.USD
+    通常は当月から1〜2ヶ月遅れで更新。
+    戻り値: [(date_str, value), ...] または []
+    """
+    try:
+        url = ("http://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData"
+               f"/PCPS/M.W00.PGOLD.USD?startPeriod={start_year}")
+        resp = requests.get(url, timeout=25,
+                            headers={"Accept": "application/json"})
+        if resp.status_code != 200:
+            safe_print(f"  [WARN] IMF PCPS: HTTP {resp.status_code}")
+            return []
+        data = resp.json()
+        # SDMX-JSON 構造: CompactData > DataSet > Series > Obs
+        obs_list = (data.get("CompactData", {})
+                        .get("DataSet", {})
+                        .get("Series", {})
+                        .get("Obs", []))
+        if not obs_list:
+            return []
+        # 単一obs の場合はdictで返ることがある
+        if isinstance(obs_list, dict):
+            obs_list = [obs_list]
+        tmp = []
+        for obs in obs_list:
+            period = obs.get("@TIME_PERIOD", "")   # "2025-01"
+            val    = obs.get("@OBS_VALUE", "")
+            if not period or not val:
+                continue
+            try:
+                year = int(period[:4])
+                if year < start_year:
+                    continue
+                date_str = period[:7] + "-01"
+                tmp.append((date_str, float(val)))
+            except Exception:
+                continue
+        tmp.sort(key=lambda x: x[0])
+        return tmp
+    except Exception as e:
+        safe_print(f"  [WARN] IMF PCPS SDMX: {e}")
+        return []
+
+
 def fetch_gold_price(start_year=2015):
     """
     金価格（USD/troy oz）月次データを取得。
-    ソース優先順:
-      1. IMF DataMapper API (PGOLD) - 無料・月次・最新まで更新
-      2. ECB EXR XAU/USD 月次
-      3. GitHub datasets CSV (フォールバック)
-    ※ FRED GOLDPMGBD228NLBM は2022年1月に削除済み → 使用不可
-      4. GitHub datasets CSV (フォールバック)
+
+    ソース戦略（2026-03確認済み）:
+    ──────────────────────────────────────────────────
+    ※ FRED GOLDPMGBD228NLBM / GOLDAMGBD228NLBM
+       → 2022年1月31日にFREDから完全削除済み（ICE著作権）。使用不可。
+    ──────────────────────────────────────────────────
+    優先順:
+      1. IMF PCPS SDMX API (PGOLD, 月次)
+         http://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData/PCPS/M.W00.PGOLD.USD
+         → 通常は1〜2ヶ月ラグで更新。2025年途中まで取得可能。
+
+      2. yfinance GC=F 日次 → 月次平均で IMF の未収録月を補完
+         → 最新月まで取得可能。IMFデータより新しい月のみ追記。
+
+      3. ECB EXR XAU/USD 月次（ユーロ建て→USD変換）
+         → フォールバック。ラグが大きいが公式ソース。
+
+      4. GitHub datasets CSV（最終フォールバック）
+         → 2024年末程度まで。
+
     戻り値: [(date_str, value_float), ...] 古い順
     """
-    # ── ソース1&2: FRED 金価格 (最も確実・最新まで月次)
-    for sid in ["GOLDAMGBD228NLBM", "GOLDPMGBD228NLBM"]:
-        try:
-            url = "https://api.stlouisfed.org/fred/series/observations"
-            params = {
-                "series_id":         sid,
-                "api_key":           FRED_API_KEY,
-                "file_type":         "json",
-                "sort_order":        "asc",
-                "observation_start": f"{start_year}-01-01",
-                "observation_end":   datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            }
-            resp = requests.get(url, params=params, timeout=15)
-            if resp.status_code == 200:
-                obs = resp.json().get("observations", [])
-                tmp = [(o["date"], float(o["value"])) for o in obs
-                       if o.get("value", ".") != "."]
-                if tmp:
-                    tmp.sort(key=lambda x: x[0])
-                    safe_print(f"  [GOLD] FRED {sid}: {len(tmp)}件取得（最新: {tmp[-1][0]}）")
-                    return tmp
-        except Exception as e:
-            safe_print(f"  [WARN] FRED {sid}: {e}")
+    combined = {}  # "YYYY-MM-01" -> float
 
-    # ── ソース3: ECB EXR XAU/USD（確定値は数ヶ月ラグあり）
+    # ── ソース1: IMF PCPS SDMX（月次公式、1〜2ヶ月ラグ）──────────
+    imf_data = _imf_pcps_gold_monthly(start_year)
+    if imf_data:
+        for d, v in imf_data:
+            combined[d] = v
+        safe_print(f"  [GOLD] IMF PCPS: {len(imf_data)}件（最新: {imf_data[-1][0]}）")
+    else:
+        safe_print("  [WARN] IMF PCPS: データなし")
+
+    # ── ソース2: yfinance GC=F で IMF の未収録月を補完 ────────────
+    # IMFにあれば使わない月、IMFにない月だけ yfinance から追加
+    yf_monthly = _yfinance_gold_monthly(start_year)
+    if yf_monthly:
+        added = 0
+        for ym, prices in sorted(yf_monthly.items()):
+            date_str = f"{ym[:4]}-{ym[4:6]}-01"
+            if date_str not in combined:
+                avg = sum(prices) / len(prices)
+                combined[date_str] = avg
+                added += 1
+        if added:
+            safe_print(f"  [GOLD] yfinance GC=F: {added}ヶ月を補完")
+        else:
+            safe_print("  [GOLD] yfinance: IMFデータで全月カバー済み、補完不要")
+    else:
+        safe_print("  [WARN] yfinance: 取得不可")
+
+    # ソース1+2 で十分なデータが取れた場合はここで返す
+    if combined:
+        result = sorted(combined.items(), key=lambda x: x[0])
+        safe_print(f"  [GOLD] 最終: {len(result)}件（最新: {result[-1][0]}）")
+        return result
+
+    # ── ソース3: ECB EXR XAU/USD（フォールバック）─────────────────
     try:
         url = "https://data-api.ecb.europa.eu/service/data/EXR/M.XAU.USD.SP00.A"
         params = {
             "startPeriod": f"{start_year}-01",
-            "detail": "dataonly",
-            "format": "csvfilewithlabels",
+            "detail":      "dataonly",
+            "format":      "csvfilewithlabels",
         }
         resp = requests.get(url, params=params, timeout=20,
                             headers={"Accept": "text/csv"})
@@ -166,8 +272,8 @@ def fetch_gold_price(start_year=2015):
                     continue
                 try:
                     period = parts[ti]
-                    val = float(parts[vi])
-                    year = int(period[:4])
+                    val    = float(parts[vi])
+                    year   = int(period[:4])
                     if year < start_year:
                         continue
                     tmp.append((period[:7] + "-01", val))
@@ -175,12 +281,12 @@ def fetch_gold_price(start_year=2015):
                     continue
             if tmp:
                 tmp.sort(key=lambda x: x[0])
-                safe_print(f"  [GOLD] ECB XAU/USD: {len(tmp)}件取得（最新: {tmp[-1][0]}）")
+                safe_print(f"  [GOLD] ECB XAU/USD: {len(tmp)}件（最新: {tmp[-1][0]}）")
                 return tmp
     except Exception as e:
         safe_print(f"  [WARN] ECB gold: {e}")
 
-    # ── ソース4: GitHub datasets CSV (フォールバック)
+    # ── ソース4: GitHub datasets CSV（最終フォールバック）────────────
     try:
         url = "https://raw.githubusercontent.com/datasets/gold-prices/main/data/monthly.csv"
         resp = requests.get(url, timeout=15)
@@ -201,10 +307,10 @@ def fetch_gold_price(start_year=2015):
                 continue
         if tmp:
             tmp.sort(key=lambda x: x[0])
-            safe_print(f"  [GOLD] GitHub CSV: {len(tmp)}件取得（最新: {tmp[-1][0]}）")
+            safe_print(f"  [GOLD] GitHub CSV: {len(tmp)}件（最新: {tmp[-1][0]}）")
             return tmp
     except Exception as e:
-        safe_print(f"  [ERROR] 金価格全ソース失敗: {e}")
+        safe_print(f"  [ERROR] 金価格 全ソース失敗: {e}")
 
     return []
 
