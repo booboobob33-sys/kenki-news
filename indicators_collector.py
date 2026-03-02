@@ -354,6 +354,11 @@ def fetch_gold_price(start_year=2015):
     # ソース1〜3 でデータが取れた場合はここで返す
     if combined:
         result = sorted(combined.items(), key=lambda x: x[0])
+        safe_print(f"  [GOLD] 月次: {len(result)}件（最新: {result[-1][0]}）")
+        # ── 週次補完（直近3ヶ月を週次データで上書き）──────────────────
+        weekly = fetch_weekly_recent("gc.f", "GC=F", "金価格", months_back=3)
+        if weekly:
+            result = merge_weekly_into_monthly(result, weekly, "金価格")
         safe_print(f"  [GOLD] 最終: {len(result)}件（最新: {result[-1][0]}）")
         return result
 
@@ -392,6 +397,9 @@ def fetch_gold_price(start_year=2015):
             if tmp:
                 tmp.sort(key=lambda x: x[0])
                 safe_print(f"  [GOLD] ECB XAU/USD: {len(tmp)}件（最新: {tmp[-1][0]}）")
+                weekly = fetch_weekly_recent("gc.f", "GC=F", "金価格", months_back=3)
+                if weekly:
+                    tmp = merge_weekly_into_monthly(tmp, weekly, "金価格")
                 return tmp
     except Exception as e:
         safe_print(f"  [WARN] ECB gold: {e}")
@@ -418,6 +426,9 @@ def fetch_gold_price(start_year=2015):
         if tmp:
             tmp.sort(key=lambda x: x[0])
             safe_print(f"  [GOLD] GitHub CSV: {len(tmp)}件（最新: {tmp[-1][0]}）")
+            weekly = fetch_weekly_recent("gc.f", "GC=F", "金価格", months_back=3)
+            if weekly:
+                tmp = merge_weekly_into_monthly(tmp, weekly, "金価格")
             return tmp
     except Exception as e:
         safe_print(f"  [ERROR] 金価格 全ソース失敗: {e}")
@@ -689,6 +700,11 @@ def fetch_crude_oil_price(start_year=2015):
     # ソース1〜3 でデータが取れた場合はここで返す
     if combined:
         result = sorted(combined.items(), key=lambda x: x[0])
+        safe_print(f"  [OIL] 月次: {len(result)}件（最新: {result[-1][0]}）")
+        # ── 週次補完（直近3ヶ月を週次データで上書き）──────────────────
+        weekly = fetch_weekly_recent("cl.f", "CL=F", "原油WTI", months_back=3)
+        if weekly:
+            result = merge_weekly_into_monthly(result, weekly, "原油WTI")
         safe_print(f"  [OIL] 最終: {len(result)}件（最新: {result[-1][0]}）")
         return result
 
@@ -707,6 +723,9 @@ def fetch_crude_oil_price(start_year=2015):
                 avg = sum(prices) / len(prices)
                 result.append((f"{ym[:4]}-{ym[4:6]}-01", round(avg, 2)))
             safe_print(f"  [OIL] FRED DCOILWTICO: {len(result)}件（最新: {result[-1][0]}）")
+            weekly = fetch_weekly_recent("cl.f", "CL=F", "原油WTI", months_back=3)
+            if weekly:
+                result = merge_weekly_into_monthly(result, weekly, "原油WTI")
             return result
     except Exception as e:
         safe_print(f"  [ERROR] 原油価格 全ソース失敗: {e}")
@@ -942,6 +961,144 @@ def fetch_commodity_price(label, imf_code, stooq_ticker, yf_ticker, fred_series,
     # ── ソース4: FRED（最終フォールバック）──────────────────────────────
     safe_print(f"  [WARN] {label}: ソース1〜3全滅、FREDにフォールバック")
     return fetch_fred(fred_series, label, start_date=f"{start_year}-01-01")
+
+
+# =============================================================================
+# 週次データ補完（金・原油・銅 共通）
+# =============================================================================
+
+def fetch_weekly_recent(stooq_ticker, yf_ticker, label, months_back=3):
+    """
+    Stooq / yfinance から週次データを取得し、直近N ヶ月分の週次平均を返す。
+    月次シートへのマージ用。
+
+    戻り値: {
+        "YYYY-MM-01": float,   # 月途中の場合はその月の週次平均（暫定値）
+        "YYYY-MM-DD": float,   # 週次データ（月初以外の日付）
+    }
+    具体的には:
+      - 過去months_back ヶ月より前 → 月次データをそのまま使う
+      - 直近months_back ヶ月内    → 週次データで上書き（週末終値）
+    """
+    from datetime import date, timedelta
+    today = date.today()
+    cutoff = date(today.year - (1 if today.month <= months_back else 0),
+                  (today.month - months_back - 1) % 12 + 1, 1)
+    cutoff_str = cutoff.strftime("%Y-%m-%d")
+
+    weekly = {}
+
+    # ── Stooq 週次（i=w）
+    headers_http = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/122.0.0.0 Safari/537.36"),
+        "Accept": "text/html,application/xhtml+xml,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        url = f"https://stooq.com/q/d/l/?s={stooq_ticker}&i=w"
+        resp = requests.get(url, headers=headers_http, timeout=20)
+        safe_print(f"  [週次] Stooq {label}: HTTP {resp.status_code}, len={len(resp.text)}")
+        if resp.status_code == 200 and resp.text.strip():
+            lines = resp.text.strip().split("\n")
+            if len(lines) >= 2 and "date" in lines[0].lower():
+                cols = [c.strip().lower() for c in lines[0].split(",")]
+                try:
+                    date_i  = cols.index("date")
+                    close_i = cols.index("close")
+                except ValueError:
+                    date_i, close_i = 0, 4
+                for line in lines[1:]:
+                    parts = line.strip().split(",")
+                    if len(parts) <= max(date_i, close_i):
+                        continue
+                    try:
+                        ds    = parts[date_i].strip()
+                        price = float(parts[close_i].strip())
+                        if price <= 0 or ds < cutoff_str:
+                            continue
+                        weekly[ds] = price
+                    except Exception:
+                        continue
+            if weekly:
+                safe_print(f"  [週次] Stooq {label}: {len(weekly)}件取得（最新: {max(weekly)}）")
+    except Exception as e:
+        safe_print(f"  [WARN] Stooq週次 {label}: {e}")
+
+    # Stooq失敗時はyfinanceで代替
+    if not weekly and yf_ticker:
+        try:
+            import yfinance as yf
+            start_str = cutoff_str
+            end_str   = today.strftime("%Y-%m-%d")
+            hist = yf.download(yf_ticker, start=start_str, end=end_str,
+                               interval="1wk", auto_adjust=True, progress=False)
+            if hist is not None and not hist.empty:
+                if hasattr(hist.columns, "levels"):
+                    close_col = [c for c in hist.columns if c[0] == "Close"]
+                    close_s = hist[close_col[0]] if close_col else hist.iloc[:, 3]
+                else:
+                    close_s = hist["Close"] if "Close" in hist.columns else hist.iloc[:, 3]
+                for ts, val in close_s.items():
+                    try:
+                        price = float(val)
+                        if price <= 0 or price != price:
+                            continue
+                        ds = ts.strftime("%Y-%m-%d")
+                        if ds >= cutoff_str:
+                            weekly[ds] = price
+                    except Exception:
+                        continue
+                if weekly:
+                    safe_print(f"  [週次] yfinance {label}: {len(weekly)}件取得（最新: {max(weekly)}）")
+        except Exception as e:
+            safe_print(f"  [WARN] yfinance週次 {label}: {e}")
+
+    return weekly
+
+
+def merge_weekly_into_monthly(monthly_rows, weekly_data, label):
+    """
+    月次データリストに週次データをマージして返す。
+
+    ルール:
+      - 週次データの日付が既存の月次エントリ（YYYY-MM-01）と同月なら
+        その月のエントリを週次の最新値で上書き（月の最終週終値を暫定値に）
+      - 週次データの日付が月次に存在しない月（月途中）なら
+        YYYY-MM-01 キーとして追加（暫定値マーク）
+      - 週次データは月次より新しい月のみ上書き（過去データは変えない）
+
+    戻り値: [(date_str, value_float), ...] 古い順
+    """
+    from datetime import datetime
+    combined = {d: v for d, v in monthly_rows}
+
+    # 月次データの最新日付
+    latest_monthly = max(combined.keys()) if combined else "2000-01-01"
+
+    # 週次データを月次にマージ
+    weekly_by_month = {}  # "YYYY-MM-01" -> 最新週の終値
+    for ds, price in sorted(weekly_data.items()):
+        month_key = ds[:7] + "-01"
+        weekly_by_month[month_key] = price  # 同月内で後の週で上書き → 月内最新週
+
+    added = 0
+    updated = 0
+    for month_key, price in sorted(weekly_by_month.items()):
+        if month_key > latest_monthly:
+            # 月次未収録の新しい月 → 追加
+            combined[month_key] = round(price, 4)
+            added += 1
+        elif month_key == latest_monthly:
+            # 月次の最新月と同月 → 週次で上書き（より新しいデータ）
+            combined[month_key] = round(price, 4)
+            updated += 1
+
+    if added or updated:
+        safe_print(f"  [週次マージ] {label}: {added}件追加, {updated}件更新")
+
+    return sorted(combined.items(), key=lambda x: x[0])
 
 
 def fetch_worldbank_commodity(commodity_id, label, start_year=2015):
@@ -1213,6 +1370,10 @@ def collect_and_write(spreadsheet):
     # IMF: PCOPP / Stooq: HG.F（銅先物） / yfinance: HG=F / FRED: PCOPPUSDM
     sheet = get_or_create_sheet(spreadsheet, "銅価格", ["日付", "銅価格 (USD/MT)"])
     rows = fetch_commodity_price("銅価格", "PCOPP", "hg.f", "HG=F", "PCOPPUSDM")
+    # 週次補完（直近3ヶ月）
+    weekly = fetch_weekly_recent("hg.f", "HG=F", "銅価格", months_back=3)
+    if weekly:
+        rows = merge_weekly_into_monthly(rows, weekly, "銅価格")
     write_bulk(sheet, rows)
     time.sleep(2)
 
