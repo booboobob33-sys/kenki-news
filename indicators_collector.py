@@ -969,26 +969,26 @@ def fetch_commodity_price(label, imf_code, stooq_ticker, yf_ticker, fred_series,
 
 def fetch_weekly_recent(stooq_ticker, yf_ticker, label, months_back=3):
     """
-    Stooq / yfinance から週次データを取得し、直近N ヶ月分の週次平均を返す。
+    Stooq / yfinance から週次データを取得し、直近N ヶ月の週末終値を返す。
     月次シートへのマージ用。
-
-    戻り値: {
-        "YYYY-MM-01": float,   # 月途中の場合はその月の週次平均（暫定値）
-        "YYYY-MM-DD": float,   # 週次データ（月初以外の日付）
-    }
-    具体的には:
-      - 過去months_back ヶ月より前 → 月次データをそのまま使う
-      - 直近months_back ヶ月内    → 週次データで上書き（週末終値）
+    戻り値: {"YYYY-MM-DD": float, ...}  週末日付->終値
     """
-    from datetime import date, timedelta
+    from datetime import date
     today = date.today()
-    cutoff = date(today.year - (1 if today.month <= months_back else 0),
-                  (today.month - months_back - 1) % 12 + 1, 1)
+
+    # cutoff = months_back ヶ月前の月初（バグ修正版）
+    m = today.month - months_back
+    y = today.year
+    while m <= 0:
+        m += 12
+        y -= 1
+    cutoff = date(y, m, 1)
     cutoff_str = cutoff.strftime("%Y-%m-%d")
+    safe_print(f"  [週次] {label}: cutoff={cutoff_str}, today={today}")
 
     weekly = {}
 
-    # ── Stooq 週次（i=w）
+    # -- Stooq 週次（i=w）
     headers_http = {
         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -999,7 +999,7 @@ def fetch_weekly_recent(stooq_ticker, yf_ticker, label, months_back=3):
     try:
         url = f"https://stooq.com/q/d/l/?s={stooq_ticker}&i=w"
         resp = requests.get(url, headers=headers_http, timeout=20)
-        safe_print(f"  [週次] Stooq {label}: HTTP {resp.status_code}, len={len(resp.text)}")
+        safe_print(f"  [週次] Stooq {label}: HTTP {resp.status_code}, len={len(resp.text)}, 先頭: {resp.text[:60].strip()!r}")
         if resp.status_code == 200 and resp.text.strip():
             lines = resp.text.strip().split("\n")
             if len(lines) >= 2 and "date" in lines[0].lower():
@@ -1023,37 +1023,54 @@ def fetch_weekly_recent(stooq_ticker, yf_ticker, label, months_back=3):
                         continue
             if weekly:
                 safe_print(f"  [週次] Stooq {label}: {len(weekly)}件取得（最新: {max(weekly)}）")
+            else:
+                safe_print(f"  [週次] Stooq {label}: パース後0件（bot検出の可能性）")
     except Exception as e:
         safe_print(f"  [WARN] Stooq週次 {label}: {e}")
 
-    # Stooq失敗時はyfinanceで代替
+    # Stooq失敗時はyfinanceで代替（日次取得->週次集計）
     if not weekly and yf_ticker:
         try:
             import yfinance as yf
-            start_str = cutoff_str
-            end_str   = today.strftime("%Y-%m-%d")
-            hist = yf.download(yf_ticker, start=start_str, end=end_str,
-                               interval="1wk", auto_adjust=True, progress=False)
+            end_str = today.strftime("%Y-%m-%d")
+            safe_print(f"  [週次] yfinance {label}: {cutoff_str}~{end_str} 日次取得中...")
+            hist = yf.download(yf_ticker, start=cutoff_str, end=end_str,
+                               interval="1d", auto_adjust=True, progress=False)
+            safe_print(f"  [週次] yfinance {label}: shape={getattr(hist, 'shape', 'N/A')}")
             if hist is not None and not hist.empty:
                 if hasattr(hist.columns, "levels"):
                     close_col = [c for c in hist.columns if c[0] == "Close"]
                     close_s = hist[close_col[0]] if close_col else hist.iloc[:, 3]
                 else:
                     close_s = hist["Close"] if "Close" in hist.columns else hist.iloc[:, 3]
+
+                # 日次->週次変換（各週の最終営業日を代表値とする）
+                week_data = {}  # "YYYY-WW" -> (date_str, price)
                 for ts, val in close_s.items():
                     try:
                         price = float(val)
                         if price <= 0 or price != price:
                             continue
                         ds = ts.strftime("%Y-%m-%d")
-                        if ds >= cutoff_str:
-                            weekly[ds] = price
+                        wk = ts.strftime("%Y-%W")
+                        if wk not in week_data or ds > week_data[wk][0]:
+                            week_data[wk] = (ds, price)
                     except Exception:
                         continue
+
+                for wk, (ds, price) in week_data.items():
+                    if ds >= cutoff_str:
+                        weekly[ds] = price
+
                 if weekly:
                     safe_print(f"  [週次] yfinance {label}: {len(weekly)}件取得（最新: {max(weekly)}）")
+                else:
+                    safe_print(f"  [週次] yfinance {label}: データ取得後0件")
         except Exception as e:
             safe_print(f"  [WARN] yfinance週次 {label}: {e}")
+
+    if not weekly:
+        safe_print(f"  [WARN] 週次補完 {label}: 全ソース失敗、スキップ")
 
     return weekly
 
