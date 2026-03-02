@@ -94,51 +94,66 @@ def get_excluded_articles():
     """
     非関連アーカイブDBから過去に除外された記事タイトルを取得する。
     ARCHIVE_DATABASE_ID が未設定の場合は空リストを返す。
+    notion-clientのSDKバージョン差異を回避するためrequestsで直接API呼び出し。
     戻り値: ["タイトル1", "タイトル2", ...] (最大50件)
     """
     if not ARCHIVE_DATABASE_ID:
         safe_print("  [ARCHIVE] ARCHIVE_DATABASE_ID未設定、フィードバック機能をスキップ")
+        return []
+    if not NOTION_TOKEN:
         return []
     try:
         safe_print("  [ARCHIVE] 非関連アーカイブDBから除外記事を取得中...")
         results = []
         has_more = True
         next_cursor = None
+        headers = {
+            "Authorization": f"Bearer {NOTION_TOKEN}",
+            "Content-Type": "application/json",
+            "Notion-Version": "2022-06-28"
+        }
         while has_more and len(results) < 50:
-            kwargs = {
-                "database_id": ARCHIVE_DATABASE_ID,
+            body = {
                 "page_size": 50,
                 "sorts": [{"timestamp": "created_time", "direction": "descending"}]
             }
             if next_cursor:
-                kwargs["start_cursor"] = next_cursor
-            query_fn = getattr(notion.databases, "query", None)
-            if not query_fn:
-                safe_print("  [WARN] notion.databases.queryが存在しません。SDKバージョンを確認してください。")
+                body["start_cursor"] = next_cursor
+
+            resp = requests.post(
+                f"https://api.notion.com/v1/databases/{ARCHIVE_DATABASE_ID}/query",
+                headers=headers,
+                json=body,
+                timeout=15
+            )
+            if resp.status_code != 200:
+                safe_print(f"  [WARN] アーカイブDB取得エラー HTTP {resp.status_code}: {resp.text[:200]}")
                 return []
-            resp = query_fn(**kwargs)
-            for page in resp.get("results", []):
-                # タイトルプロパティを取得（"Title" または "Title(JP)" 等に対応）
+
+            data = resp.json()
+            for page in data.get("results", []):
                 props = page.get("properties", {})
                 title_text = ""
+                # "Title(JP)", "Title" など順番に探す
                 for key in ["Title(JP)", "Title", "タイトル"]:
                     if key in props:
                         rich = props[key].get("title", [])
                         if rich:
                             title_text = rich[0].get("plain_text", "")
                             break
-                # どのキーでも取れない場合は最初のtitleプロパティを使用
+                # 見つからなければtitleタイプのプロパティを検索
                 if not title_text:
                     for key, val in props.items():
-                        if val.get("type") == "title":
+                        if isinstance(val, dict) and val.get("type") == "title":
                             rich = val.get("title", [])
                             if rich:
                                 title_text = rich[0].get("plain_text", "")
                                 break
                 if title_text:
                     results.append(title_text)
-            has_more = resp.get("has_more", False)
-            next_cursor = resp.get("next_cursor")
+
+            has_more = data.get("has_more", False)
+            next_cursor = data.get("next_cursor")
 
         safe_print(f"  [ARCHIVE] {len(results)}件の除外記事を取得")
         return results[:50]
