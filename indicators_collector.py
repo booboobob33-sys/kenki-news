@@ -425,6 +425,295 @@ def fetch_gold_price(start_year=2015):
     return []
 
 
+# =============================================================================
+# 原油価格（WTI）取得関数群
+# =============================================================================
+
+def _stooq_crude_monthly(start_year=2015):
+    """
+    Stooq.com から WTI原油先物（CL.F）の月次または日次CSVを取得し月次データを返す。
+    認証不要・HTTPS・requests のみで動作。
+    戻り値: {yyyymm: price} の辞書、または空 {}
+    """
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/122.0.0.0 Safari/537.36"),
+        "Accept": "text/html,application/xhtml+xml,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    def _parse_stooq_csv(text, monthly_bar=True):
+        lines = text.strip().split("\n")
+        if len(lines) < 2:
+            return {}
+        header = lines[0].strip().lower()
+        if "date" not in header:
+            safe_print(f"  [WARN] Stooq原油: 予期しないヘッダー: {lines[0][:80]}")
+            return {}
+        cols = [c.strip().lower() for c in lines[0].split(",")]
+        try:
+            date_i  = cols.index("date")
+            close_i = cols.index("close")
+        except ValueError:
+            date_i, close_i = 0, 4
+        monthly = {}
+        for line in lines[1:]:
+            parts = line.strip().split(",")
+            if len(parts) <= max(date_i, close_i):
+                continue
+            try:
+                date_str = parts[date_i].strip()
+                close    = float(parts[close_i].strip())
+                if close <= 0 or not date_str[:4].isdigit():
+                    continue
+                year = int(date_str[:4])
+                if year < start_year:
+                    continue
+                ym = date_str[:7].replace("-", "")
+                monthly[ym] = close
+            except Exception:
+                continue
+        return monthly
+
+    # ── 試行1: 月次足（i=m）
+    try:
+        url = "https://stooq.com/q/d/l/?s=cl.f&i=m"
+        resp = requests.get(url, headers=headers, timeout=20)
+        safe_print(f"  [OIL] Stooq月次: HTTP {resp.status_code}, "
+                   f"len={len(resp.text)}, "
+                   f"先頭80字: {resp.text[:80].strip()!r}")
+        if resp.status_code == 200 and resp.text.strip():
+            monthly = _parse_stooq_csv(resp.text, monthly_bar=True)
+            if monthly:
+                safe_print(f"  [OIL] Stooq月次: {len(monthly)}件（最新: {max(monthly)}）")
+                return monthly
+    except Exception as e:
+        safe_print(f"  [WARN] Stooq原油月次: {e}")
+
+    # ── 試行2: 日次足（i=d）でフォールバック
+    try:
+        url = "https://stooq.com/q/d/l/?s=cl.f&i=d"
+        resp = requests.get(url, headers=headers, timeout=20)
+        safe_print(f"  [OIL] Stooq日次: HTTP {resp.status_code}, len={len(resp.text)}")
+        if resp.status_code == 200 and resp.text.strip():
+            monthly = _parse_stooq_csv(resp.text, monthly_bar=False)
+            if monthly:
+                safe_print(f"  [OIL] Stooq日次→月次変換: {len(monthly)}件（最新: {max(monthly)}）")
+                return monthly
+    except Exception as e:
+        safe_print(f"  [WARN] Stooq原油日次: {e}")
+
+    safe_print("  [WARN] Stooq原油: 全試行失敗")
+    return {}
+
+
+def _yfinance_crude_monthly(start_year=2015):
+    """
+    Yahoo Finance (CL=F WTI先物) から日次データを取得し月次平均に変換する。
+    戻り値: {yyyymm: [prices...]} の辞書、または空 {}
+    """
+    try:
+        import yfinance as yf
+        from datetime import date
+        start = f"{start_year}-01-01"
+        end   = date.today().strftime("%Y-%m-%d")
+        hist = yf.download("CL=F", start=start, end=end,
+                           interval="1d", auto_adjust=True,
+                           progress=False)
+        if hist is None or hist.empty:
+            return {}
+        monthly = {}
+        if hasattr(hist.columns, "levels"):
+            close_col = [c for c in hist.columns if c[0] == "Close"]
+            close_series = hist[close_col[0]] if close_col else hist.iloc[:, 3]
+        else:
+            close_series = hist["Close"] if "Close" in hist.columns else hist.iloc[:, 3]
+
+        for ts, val in close_series.items():
+            try:
+                price = float(val)
+                if price <= 0 or price != price:
+                    continue
+                ym = ts.strftime("%Y%m")
+                monthly.setdefault(ym, []).append(price)
+            except Exception:
+                continue
+        return monthly
+    except ImportError:
+        safe_print("  [WARN] yfinance未インストール（原油）")
+        return {}
+    except Exception as e:
+        safe_print(f"  [WARN] yfinance CL=F: {e}")
+        return {}
+
+
+def _eia_crude_monthly(start_year=2015):
+    """
+    EIA（米エネルギー省）公式API から WTI原油月次価格を取得。
+    エンドポイント: https://api.eia.gov/v2/petroleum/pri/spt/data/
+    認証不要（api_keyなし）でも一部エンドポイントが使える。
+    フォールバックとしてEIAのオープンCSVを使用。
+    戻り値: [(date_str, value_float), ...] または []
+    """
+    # ── 試行1: EIA open data CSV（認証不要）
+    try:
+        url = ("https://api.eia.gov/v2/petroleum/pri/spt/data/"
+               "?frequency=monthly&data[0]=value"
+               "&facets[product][]=EPCWTI&facets[duoarea][]=NUS"
+               f"&start={start_year}-01&sort[0][column]=period"
+               "&sort[0][direction]=asc&offset=0&length=5000")
+        resp = requests.get(url, timeout=20,
+                            headers={"Accept": "application/json"})
+        safe_print(f"  [OIL] EIA API: HTTP {resp.status_code}")
+        if resp.status_code == 200:
+            js = resp.json()
+            rows = js.get("response", {}).get("data", [])
+            if rows:
+                tmp = []
+                for r in rows:
+                    period = r.get("period", "")   # "2025-01"
+                    val    = r.get("value")
+                    if not period or val is None:
+                        continue
+                    try:
+                        year = int(period[:4])
+                        if year < start_year:
+                            continue
+                        tmp.append((period[:7] + "-01", float(val)))
+                    except Exception:
+                        continue
+                if tmp:
+                    tmp.sort(key=lambda x: x[0])
+                    safe_print(f"  [OIL] EIA API: {len(tmp)}件（最新: {tmp[-1][0]}）")
+                    return tmp
+    except Exception as e:
+        safe_print(f"  [WARN] EIA API: {e}")
+
+    # ── 試行2: IMF PCPS POILWTIUSDM（WTI 月次）
+    try:
+        url = ("https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData"
+               f"/PCPS/M.W00.POILWTI.USD?startPeriod={start_year}")
+        resp = requests.get(url, timeout=25,
+                            headers={"Accept": "application/json"})
+        if resp.status_code == 200:
+            data = resp.json()
+            obs_list = (data.get("CompactData", {})
+                            .get("DataSet", {})
+                            .get("Series", {})
+                            .get("Obs", []))
+            if obs_list:
+                if isinstance(obs_list, dict):
+                    obs_list = [obs_list]
+                tmp = []
+                for obs in obs_list:
+                    period = obs.get("@TIME_PERIOD", "")
+                    val    = obs.get("@OBS_VALUE", "")
+                    if not period or not val:
+                        continue
+                    try:
+                        year = int(period[:4])
+                        if year < start_year:
+                            continue
+                        tmp.append((period[:7] + "-01", float(val)))
+                    except Exception:
+                        continue
+                if tmp:
+                    tmp.sort(key=lambda x: x[0])
+                    safe_print(f"  [OIL] IMF PCPS WTI: {len(tmp)}件（最新: {tmp[-1][0]}）")
+                    return tmp
+    except Exception as e:
+        safe_print(f"  [WARN] IMF PCPS WTI: {e}")
+
+    return []
+
+
+def fetch_crude_oil_price(start_year=2015):
+    """
+    WTI原油価格（USD/bbl）月次データを取得。
+
+    ソース戦略（2026-03実装）:
+    ──────────────────────────────────────────────────
+    優先順:
+      1. EIA公式API / IMF PCPS POILWTI（月次公式・認証不要）
+         → 最新月まで取得可能。
+
+      2. Stooq.com CL.F 月次CSV（認証不要・HTTPS）
+         → 最新月まで取得可能。ソース1未収録月を補完。
+
+      3. yfinance CL=F 日次 → 月次平均（インストール済み時のみ）
+         → Stooq失敗時のバックアップ。
+
+      4. FRED DCOILWTICO（フォールバック・日次→月次変換）
+
+    戻り値: [(date_str, value_float), ...] 古い順
+    """
+    combined = {}  # "YYYY-MM-01" -> float
+
+    # ── ソース1: EIA / IMF PCPS（公式月次）────────────────────────
+    official_data = _eia_crude_monthly(start_year)
+    if official_data:
+        for d, v in official_data:
+            combined[d] = v
+        safe_print(f"  [OIL] 公式ソース: {len(official_data)}件（最新: {official_data[-1][0]}）")
+    else:
+        safe_print("  [WARN] 公式ソース（EIA/IMF）: データなし")
+
+    # ── ソース2: Stooq CL.F 月次（未収録月を補完）──────────────────
+    stooq_monthly = _stooq_crude_monthly(start_year)
+    if stooq_monthly:
+        added = 0
+        for ym, price in sorted(stooq_monthly.items()):
+            date_str = f"{ym[:4]}-{ym[4:6]}-01"
+            if date_str not in combined:
+                combined[date_str] = price
+                added += 1
+        if added:
+            safe_print(f"  [OIL] Stooq: {added}ヶ月を補完")
+        else:
+            safe_print("  [OIL] Stooq: 公式データで全月カバー済み")
+    else:
+        safe_print("  [WARN] Stooq原油: 取得不可、yfinanceに移行")
+        # ── ソース3: yfinance CL=F（Stooq失敗時のみ）────────────────
+        yf_monthly = _yfinance_crude_monthly(start_year)
+        if yf_monthly:
+            added = 0
+            for ym, prices in sorted(yf_monthly.items()):
+                date_str = f"{ym[:4]}-{ym[4:6]}-01"
+                if date_str not in combined:
+                    combined[date_str] = sum(prices) / len(prices)
+                    added += 1
+            if added:
+                safe_print(f"  [OIL] yfinance CL=F: {added}ヶ月を補完")
+
+    # ソース1〜3 でデータが取れた場合はここで返す
+    if combined:
+        result = sorted(combined.items(), key=lambda x: x[0])
+        safe_print(f"  [OIL] 最終: {len(result)}件（最新: {result[-1][0]}）")
+        return result
+
+    # ── ソース4: FRED DCOILWTICO（最終フォールバック・日次→月次変換）──
+    safe_print("  [WARN] ソース1〜3全滅、FRED DCOILWTICO にフォールバック")
+    try:
+        rows = fetch_fred("DCOILWTICO", "原油WTI(FRED)", start_date=f"{start_year}-01-01")
+        if rows:
+            monthly = {}
+            for date_str, val in rows:
+                ym = date_str[:7].replace("-", "")
+                monthly.setdefault(ym, []).append(val)
+            result = []
+            for ym in sorted(monthly):
+                prices = monthly[ym]
+                avg = sum(prices) / len(prices)
+                result.append((f"{ym[:4]}-{ym[4:6]}-01", round(avg, 2)))
+            safe_print(f"  [OIL] FRED DCOILWTICO: {len(result)}件（最新: {result[-1][0]}）")
+            return result
+    except Exception as e:
+        safe_print(f"  [ERROR] 原油価格 全ソース失敗: {e}")
+
+    return []
+
+
 def fetch_fred(series_id, label, start_date="2015-01-01"):
     """
     FRED APIから過去データを複数件取得して返す。
@@ -725,7 +1014,7 @@ def collect_and_write(spreadsheet):
 
     # ── 3. 原油価格 WTI（USD/bbl）─────────────────────────────────────────
     sheet = get_or_create_sheet(spreadsheet, "原油価格WTI", ["日付", "WTI原油 (USD/bbl)"])
-    rows = fetch_fred("DCOILWTICO", "原油WTI")
+    rows = fetch_crude_oil_price()
     write_bulk(sheet, rows)
     time.sleep(2)
 
