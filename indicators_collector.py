@@ -741,6 +741,209 @@ def fetch_fred(series_id, label, start_date="2015-01-01"):
 # =============================================================================
 # World Bank API
 # =============================================================================
+# =============================================================================
+# 汎用IMF PCPS 商品価格取得（銅・石炭・鉄鉱石・ニッケル共通）
+# =============================================================================
+
+def _imf_pcps_commodity_monthly(imf_series_code, label, start_year=2015):
+    """
+    IMF PCPS SDMX API から指定商品の月次価格を取得。
+    imf_series_code: 例 "PCOPP"（銅）, "PCOALAU"（石炭）, "PIORECR"（鉄鉱石）, "PNICK"（ニッケル）
+    戻り値: [(date_str, value_float), ...] または []
+    """
+    try:
+        url = (f"https://dataservices.imf.org/REST/SDMX_JSON.svc/CompactData"
+               f"/PCPS/M.W00.{imf_series_code}.USD?startPeriod={start_year}")
+        resp = requests.get(url, timeout=25, headers={"Accept": "application/json"})
+        if resp.status_code != 200:
+            safe_print(f"  [WARN] IMF PCPS {label}: HTTP {resp.status_code}")
+            return []
+        data = resp.json()
+        obs_list = (data.get("CompactData", {})
+                        .get("DataSet", {})
+                        .get("Series", {})
+                        .get("Obs", []))
+        if not obs_list:
+            return []
+        if isinstance(obs_list, dict):
+            obs_list = [obs_list]
+        tmp = []
+        for obs in obs_list:
+            period = obs.get("@TIME_PERIOD", "")
+            val    = obs.get("@OBS_VALUE", "")
+            if not period or not val:
+                continue
+            try:
+                year = int(period[:4])
+                if year < start_year:
+                    continue
+                tmp.append((period[:7] + "-01", float(val)))
+            except Exception:
+                continue
+        tmp.sort(key=lambda x: x[0])
+        if tmp:
+            safe_print(f"  [IMF] {label}: {len(tmp)}件（最新: {tmp[-1][0]}）")
+        return tmp
+    except Exception as e:
+        safe_print(f"  [WARN] IMF PCPS {label}: {e}")
+        return []
+
+
+def _stooq_commodity_monthly(ticker, label, start_year=2015):
+    """
+    Stooq.com から指定ティッカーの月次/日次CSVを取得し月次データを返す。
+    ticker: 例 "hg.f"（銅先物）
+    戻り値: {yyyymm: price} または {}
+    """
+    headers = {
+        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/122.0.0.0 Safari/537.36"),
+        "Accept": "text/html,application/xhtml+xml,*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    def _parse(text):
+        lines = text.strip().split("\n")
+        if len(lines) < 2:
+            return {}
+        cols = [c.strip().lower() for c in lines[0].split(",")]
+        if "date" not in cols:
+            return {}
+        try:
+            date_i  = cols.index("date")
+            close_i = cols.index("close")
+        except ValueError:
+            date_i, close_i = 0, 4
+        monthly = {}
+        for line in lines[1:]:
+            parts = line.strip().split(",")
+            if len(parts) <= max(date_i, close_i):
+                continue
+            try:
+                date_str = parts[date_i].strip()
+                close    = float(parts[close_i].strip())
+                if close <= 0 or not date_str[:4].isdigit():
+                    continue
+                if int(date_str[:4]) < start_year:
+                    continue
+                ym = date_str[:7].replace("-", "")
+                monthly[ym] = close
+            except Exception:
+                continue
+        return monthly
+
+    for interval, iname in [("m", "月次"), ("d", "日次")]:
+        try:
+            url = f"https://stooq.com/q/d/l/?s={ticker}&i={interval}"
+            resp = requests.get(url, headers=headers, timeout=20)
+            safe_print(f"  [Stooq] {label} {iname}: HTTP {resp.status_code}, len={len(resp.text)}")
+            if resp.status_code == 200 and resp.text.strip():
+                monthly = _parse(resp.text)
+                if monthly:
+                    safe_print(f"  [Stooq] {label} {iname}: {len(monthly)}件（最新: {max(monthly)}）")
+                    return monthly
+        except Exception as e:
+            safe_print(f"  [WARN] Stooq {label} {iname}: {e}")
+
+    return {}
+
+
+def _yfinance_commodity_monthly(ticker, label, start_year=2015):
+    """
+    Yahoo Finance から指定ティッカーの日次データを取得し月次平均に変換。
+    ticker: 例 "HG=F"（銅先物）
+    戻り値: {yyyymm: [prices...]} または {}
+    """
+    try:
+        import yfinance as yf
+        from datetime import date
+        hist = yf.download(ticker, start=f"{start_year}-01-01",
+                           end=date.today().strftime("%Y-%m-%d"),
+                           interval="1d", auto_adjust=True, progress=False)
+        if hist is None or hist.empty:
+            return {}
+        if hasattr(hist.columns, "levels"):
+            close_col = [c for c in hist.columns if c[0] == "Close"]
+            close_series = hist[close_col[0]] if close_col else hist.iloc[:, 3]
+        else:
+            close_series = hist["Close"] if "Close" in hist.columns else hist.iloc[:, 3]
+        monthly = {}
+        for ts, val in close_series.items():
+            try:
+                price = float(val)
+                if price <= 0 or price != price:
+                    continue
+                monthly.setdefault(ts.strftime("%Y%m"), []).append(price)
+            except Exception:
+                continue
+        return monthly
+    except ImportError:
+        safe_print(f"  [WARN] yfinance未インストール（{label}）")
+        return {}
+    except Exception as e:
+        safe_print(f"  [WARN] yfinance {label}: {e}")
+        return {}
+
+
+def fetch_commodity_price(label, imf_code, stooq_ticker, yf_ticker, fred_series, start_year=2015):
+    """
+    汎用商品価格取得関数。金・原油と同じフォールバック構造。
+
+    優先順:
+      1. IMF PCPS SDMX API（月次公式・HTTPS）
+      2. Stooq 月次/日次CSV（認証不要）
+      3. yfinance 日次→月次平均
+      4. FRED（最終フォールバック）
+
+    stooq_ticker=None / yf_ticker=None の場合はそのソースをスキップ。
+    戻り値: [(date_str, value_float), ...] 古い順
+    """
+    combined = {}
+
+    # ── ソース1: IMF PCPS ────────────────────────────────────────────────
+    if imf_code:
+        imf_data = _imf_pcps_commodity_monthly(imf_code, label, start_year)
+        if imf_data:
+            for d, v in imf_data:
+                combined[d] = v
+
+    # ── ソース2: Stooq（IMF未収録月を補完）──────────────────────────────
+    if stooq_ticker:
+        stooq_monthly = _stooq_commodity_monthly(stooq_ticker, label, start_year)
+        if stooq_monthly:
+            added = 0
+            for ym, price in sorted(stooq_monthly.items()):
+                date_str = f"{ym[:4]}-{ym[4:6]}-01"
+                if date_str not in combined:
+                    combined[date_str] = price
+                    added += 1
+            if added:
+                safe_print(f"  [{label}] Stooq: {added}ヶ月補完")
+        else:
+            # Stooq失敗時のみyfinance
+            if yf_ticker:
+                yf_monthly = _yfinance_commodity_monthly(yf_ticker, label, start_year)
+                if yf_monthly:
+                    added = 0
+                    for ym, prices in sorted(yf_monthly.items()):
+                        date_str = f"{ym[:4]}-{ym[4:6]}-01"
+                        if date_str not in combined:
+                            combined[date_str] = sum(prices) / len(prices)
+                            added += 1
+                    if added:
+                        safe_print(f"  [{label}] yfinance: {added}ヶ月補完")
+
+    if combined:
+        result = sorted(combined.items(), key=lambda x: x[0])
+        safe_print(f"  [{label}] 最終: {len(result)}件（最新: {result[-1][0]}）")
+        return result
+
+    # ── ソース4: FRED（最終フォールバック）──────────────────────────────
+    safe_print(f"  [WARN] {label}: ソース1〜3全滅、FREDにフォールバック")
+    return fetch_fred(fred_series, label, start_date=f"{start_year}-01-01")
+
+
 def fetch_worldbank_commodity(commodity_id, label, start_year=2015):
     """
     World Bank Commodity Price API（Pink Sheet）から月次データを取得。
@@ -1006,9 +1209,10 @@ def collect_and_write(spreadsheet):
     write_bulk(sheet, rows)
     time.sleep(2)
 
-    # ── 2. 銅価格（USD/lb）────────────────────────────────────────────────
-    sheet = get_or_create_sheet(spreadsheet, "銅価格", ["日付", "銅価格 (USD/lb)"])
-    rows = fetch_fred("PCOPPUSDM", "銅価格")
+    # ── 2. 銅価格（USD/MT）────────────────────────────────────────────────
+    # IMF: PCOPP / Stooq: HG.F（銅先物） / yfinance: HG=F / FRED: PCOPPUSDM
+    sheet = get_or_create_sheet(spreadsheet, "銅価格", ["日付", "銅価格 (USD/MT)"])
+    rows = fetch_commodity_price("銅価格", "PCOPP", "hg.f", "HG=F", "PCOPPUSDM")
     write_bulk(sheet, rows)
     time.sleep(2)
 
@@ -1019,16 +1223,16 @@ def collect_and_write(spreadsheet):
     time.sleep(2)
 
     # ── 4. 石炭価格（USD/ton）─────────────────────────────────────────────
-    # PCOALAUUSDM = オーストラリア炭（Newcastle）月次
+    # IMF: PCOALAU / Stooq: なし / FRED: PCOALAUUSDM
     sheet = get_or_create_sheet(spreadsheet, "石炭価格", ["日付", "石炭価格 (USD/ton)"])
-    rows = fetch_worldbank_commodity("COAL", "石炭価格")
+    rows = fetch_commodity_price("石炭価格", "PCOALAU", None, None, "PCOALAUUSDM")
     write_bulk(sheet, rows)
     time.sleep(2)
 
     # ── 5. 鉄鉱石価格（USD/dmtu）─────────────────────────────────────────
-    # PIORECRUSDM = 鉄鉱石スポット価格（中国向け）月次
+    # IMF: PIORECR / Stooq: なし / FRED: PIORECRUSDM
     sheet = get_or_create_sheet(spreadsheet, "鉄鉱石価格", ["日付", "鉄鉱石価格 (USD/dmtu)"])
-    rows = fetch_worldbank_commodity("IRON_ORE", "鉄鉱石価格")
+    rows = fetch_commodity_price("鉄鉱石価格", "PIORECR", None, None, "PIORECRUSDM")
     write_bulk(sheet, rows)
     time.sleep(2)
 
@@ -1039,9 +1243,9 @@ def collect_and_write(spreadsheet):
     time.sleep(2)
 
     # ── 8. ニッケル価格（USD/mt）─────────────────────────────────────────
-    # FRED: PNICKUSDM = London Metal Exchange ニッケル月次価格
+    # IMF: PNICK / Stooq: なし / FRED: PNICKUSDM
     sheet = get_or_create_sheet(spreadsheet, "ニッケル価格", ["日付", "ニッケル価格 (USD/mt)"])
-    rows = fetch_fred("PNICKUSDM", "ニッケル価格")
+    rows = fetch_commodity_price("ニッケル価格", "PNICK", None, None, "PNICKUSDM")
     write_bulk(sheet, rows)
     time.sleep(2)
 
