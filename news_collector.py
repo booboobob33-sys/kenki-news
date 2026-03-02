@@ -112,7 +112,11 @@ def get_excluded_articles():
             }
             if next_cursor:
                 kwargs["start_cursor"] = next_cursor
-            resp = notion.databases.query(**kwargs)
+            query_fn = getattr(notion.databases, "query", None)
+            if not query_fn:
+                safe_print("  [WARN] notion.databases.queryが存在しません。SDKバージョンを確認してください。")
+                return []
+            resp = query_fn(**kwargs)
             for page in resp.get("results", []):
                 # タイトルプロパティを取得（"Title" または "Title(JP)" 等に対応）
                 props = page.get("properties", {})
