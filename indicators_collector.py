@@ -1328,6 +1328,59 @@ def fetch_eurostat_construction(start_year=2015):
     return fetch_eurostat_housing(start_year)
 
 # =============================================================================
+# data.json 生成（dashboard.html 用静的ファイル）
+# =============================================================================
+def build_json_rows(monthly_rows, weekly_data=None):
+    """
+    月次データをJSON用リストに変換する。
+    weekly_data がある場合、当月の YYYY-MM-01 エントリを除いて
+    当月の実際の週次日付（YYYY-MM-DD）を末尾に継ぎ足す。
+    """
+    current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+    current_month_key = current_month + "-01"
+
+    current_weekly = {}
+    if weekly_data:
+        current_weekly = {d: v for d, v in weekly_data.items() if d[:7] == current_month}
+
+    if current_weekly:
+        # 当月以前の月次データのみ残す（当月の YYYY-MM-01 は週次実日付で置き換え）
+        base = [(d, v) for d, v in monthly_rows if d < current_month_key]
+        result = [[d, round(float(v), 4)] for d, v in sorted(base, key=lambda x: x[0])]
+        result += [[d, round(float(v), 4)] for d, v in sorted(current_weekly.items())]
+    else:
+        result = [[d, round(float(v), 4)] for d, v in sorted(monthly_rows, key=lambda x: x[0])]
+
+    return result
+
+
+def generate_data_json(all_data, generated_at, raw_weekly=None):
+    """
+    収集した全データを data.json として保存する。
+    dashboard.html が Google Sheets API の代わりにこのファイルをfetchする。
+    raw_weekly: {シート名: {date_str: value}} 当月の実際の週次日付データ
+    """
+    if raw_weekly is None:
+        raw_weekly = {}
+
+    output = {
+        "generated_at": generated_at,
+        "sheets": {}
+    }
+    for sheet_name, rows in all_data.items():
+        if rows:
+            output["sheets"][sheet_name] = build_json_rows(rows, raw_weekly.get(sheet_name))
+        else:
+            output["sheets"][sheet_name] = []
+
+    with open("data.json", "w", encoding="utf-8") as f:
+        json.dump(output, f, ensure_ascii=False, separators=(",", ":"))
+
+    total = sum(len(v) for v in output["sheets"].values())
+    safe_print(f"\n[JSON] data.json を生成: {len(all_data)}シート, 計{total}件")
+
+
+# =============================================================================
 # 各指標を収集してSheetsに書き込む
 # =============================================================================
 def write_bulk(sheet, rows):
@@ -1376,11 +1429,16 @@ def collect_and_write(spreadsheet):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     safe_print(f"\n=== Collecting indicators ({today}) ===\n")
 
+    all_data = {}
+    raw_weekly = {}  # 当月の週次実日付データ（JSON用）
+
     # ── 1. 金価格（USD/troy oz）────────────────────────────────────────────
     # freegoldapi.com: 無料・APIキー不要・月次データ
     sheet = get_or_create_sheet(spreadsheet, "金価格", ["日付", "金価格 (USD/oz)"])
     rows = fetch_gold_price()
     write_bulk(sheet, rows)
+    all_data["金価格"] = rows
+    raw_weekly["金価格"] = fetch_weekly_recent("gc.f", "GC=F", "金価格", months_back=1)
     time.sleep(2)
 
     # ── 2. 銅価格（USD/MT）────────────────────────────────────────────────
@@ -1389,15 +1447,19 @@ def collect_and_write(spreadsheet):
     rows = fetch_commodity_price("銅価格", "PCOPP", "hg.f", "HG=F", "PCOPPUSDM")
     # 週次補完（直近3ヶ月）
     weekly = fetch_weekly_recent("hg.f", "HG=F", "銅価格", months_back=3)
+    raw_weekly["銅価格"] = weekly or {}
     if weekly:
         rows = merge_weekly_into_monthly(rows, weekly, "銅価格")
     write_bulk(sheet, rows)
+    all_data["銅価格"] = rows
     time.sleep(2)
 
     # ── 3. 原油価格 WTI（USD/bbl）─────────────────────────────────────────
     sheet = get_or_create_sheet(spreadsheet, "原油価格WTI", ["日付", "WTI原油 (USD/bbl)"])
     rows = fetch_crude_oil_price()
     write_bulk(sheet, rows)
+    all_data["原油価格WTI"] = rows
+    raw_weekly["原油価格WTI"] = fetch_weekly_recent("cl.f", "CL=F", "原油WTI", months_back=1)
     time.sleep(2)
 
     # ── 4. 石炭価格（USD/ton）─────────────────────────────────────────────
@@ -1405,6 +1467,7 @@ def collect_and_write(spreadsheet):
     sheet = get_or_create_sheet(spreadsheet, "石炭価格", ["日付", "石炭価格 (USD/ton)"])
     rows = fetch_commodity_price("石炭価格", "PCOALAU", None, None, "PCOALAUUSDM")
     write_bulk(sheet, rows)
+    all_data["石炭価格"] = rows
     time.sleep(2)
 
     # ── 5. 鉄鉱石価格（USD/dmtu）─────────────────────────────────────────
@@ -1412,12 +1475,14 @@ def collect_and_write(spreadsheet):
     sheet = get_or_create_sheet(spreadsheet, "鉄鉱石価格", ["日付", "鉄鉱石価格 (USD/dmtu)"])
     rows = fetch_commodity_price("鉄鉱石価格", "PIORECR", None, None, "PIORECRUSDM")
     write_bulk(sheet, rows)
+    all_data["鉄鉱石価格"] = rows
     time.sleep(2)
 
     # ── 6. 北米住宅着工件数（千件）────────────────────────────────────────
     sheet = get_or_create_sheet(spreadsheet, "北米住宅着工", ["日付", "北米住宅着工 (千件)"])
     rows = fetch_fred("HOUST", "北米住宅着工")
     write_bulk(sheet, rows)
+    all_data["北米住宅着工"] = rows
     time.sleep(2)
 
     # ── 8. ニッケル価格（USD/mt）─────────────────────────────────────────
@@ -1425,14 +1490,17 @@ def collect_and_write(spreadsheet):
     sheet = get_or_create_sheet(spreadsheet, "ニッケル価格", ["日付", "ニッケル価格 (USD/mt)"])
     rows = fetch_commodity_price("ニッケル価格", "PNICK", None, None, "PNICKUSDM")
     write_bulk(sheet, rows)
+    all_data["ニッケル価格"] = rows
     time.sleep(2)
 
     # ── 9. 欧州住宅着工（月次・絶対値）────────────────────────────────────
     sheet = get_or_create_sheet(spreadsheet, "欧州建設生産指数", ["日付", "EU住宅着工 (件)"])
     rows = fetch_eurostat_housing()
     write_bulk(sheet, rows)
+    all_data["欧州建設生産指数"] = rows
     time.sleep(2)
 
+    generate_data_json(all_data, today, raw_weekly)
     safe_print("\n=== Collection complete ===")
 
 
