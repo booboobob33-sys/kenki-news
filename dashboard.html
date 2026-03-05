@@ -427,9 +427,12 @@ function drawChart(canvasId, data, color, yLabel) {
             maxRotation: 0,
             callback: function(val, idx) {
               const label = this.getLabelForValue(val);
-              // YYYY-MM-DD → "YY/MM" 形式に短縮
-              if (label && label.length >= 7) return label.slice(2,4) + '/' + label.slice(5,7);
-              return label;
+              if (!label || label.length < 7) return label;
+              const day = label.slice(8, 10);
+              // 日が "01" でない = 週次実日付 → "MM/DD" 形式
+              if (day && day !== '01') return label.slice(5,7) + '/' + label.slice(8,10);
+              // 月次データ → "YY/MM" 形式
+              return label.slice(2,4) + '/' + label.slice(5,7);
             }
           },
           border: { color: '#252a38' }
