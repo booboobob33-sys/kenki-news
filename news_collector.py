@@ -194,8 +194,8 @@ ACTUAL_DB_PROPS = get_db_properties()
 if not ACTUAL_DB_PROPS:
     safe_print(f"  [NOTION] API returned no properties. Using hardcoded backup for column names.")
     ACTUAL_DB_PROPS = [
-        "Title", "Source URL", "Published Date（記事日付）", 
-        "Brand", "Region", "Segment", "Source Name", "Summary"
+        "Title(JP)", "Title(EN)", "Source URL", "Published Date（記事日付）",
+        "Brand", "Region", "Segment", "Source", "Summary"
     ]
 
 def get_prop_name(candidates, default_if_empty=None):
@@ -215,14 +215,15 @@ def get_prop_name(candidates, default_if_empty=None):
 
 # Mapping based on user provided exact names
 P_MAP = {
-    "title": get_prop_name(["Title"], default_if_empty="Title"),
+    "title_jp": get_prop_name(["Title(JP)"], default_if_empty="Title(JP)"),
+    "title_en": get_prop_name(["Title(EN)"], default_if_empty="Title(EN)"),
     "url": get_prop_name(["Source URL"], default_if_empty="Source URL"),
     "date": get_prop_name(["Published Date（記事日付）", "Published Date"], default_if_empty="Published Date（記事日付）"),
     "brand": get_prop_name(["Brand"], default_if_empty="Brand"),
     "segment": get_prop_name(["Segment"], default_if_empty="Segment"),
     "region": get_prop_name(["Region"], default_if_empty="Region"),
     "summary": get_prop_name(["Summary"], default_if_empty="Summary"),
-    "source_name": get_prop_name(["Source Name"], default_if_empty="Source Name")
+    "source": get_prop_name(["Source"], default_if_empty="Source")
 }
 
 safe_print(f"  [NOTION] Final Mapped columns: " + ", ".join([f"{k}->{v}" for k,v in P_MAP.items() if v]))
@@ -311,11 +312,15 @@ def analyze_article_with_gemini(article_data, page_text=""):
     prompt = f"""あなたは建設・鉱山機械業界の専門ニュースアナリストです。以下の記事を分析し、必ず下記のJSON形式のみで回答してください。余分な説明文は一切不要です。
 
 【記事タイトル】: {article_data['title']}
+【フィード名（参考）】: {article_data.get('feed_name', '')}
 【記事本文/概要】:
 {content}
 
 出力するJSONの形式（これ以外の出力はしないでください）:
 {{
+  "title_jp": "日本語タイトル（元が英語なら日本語に翻訳、元が日本語ならそのまま。出典名は含めない）",
+  "title_en": "英語タイトル（元が英語ならそのまま、元が日本語なら英語に翻訳。出典名は含めない）",
+  "source": "出典名（例: 日経新聞, 日刊工業新聞, Komatsu, Caterpillar, Construction Equipment Guide など簡潔に）",
   "bullet_summary": ["要約1（日本語・1文で完結）", "要約2（日本語・1文で完結）", "要約3（日本語・1文で完結）"],
   "full_body": "記事本文の日本語翻訳（英語の場合は自然な日本語に翻訳、日本語の場合はそのまま掲載）。広告・ナビゲーション・著者情報等は除き、ニュース本文のみ。最大1800文字。",
   "brand": "関連メーカー名（例: Caterpillar, Komatsu, Liebherr。複数はカンマ区切り。不明はnone）",
@@ -356,19 +361,32 @@ def save_to_notion(result, article_data):
     
     # Construct base properties
     props = {}
-    title_col = P_MAP["title"]
+    title_jp_col = P_MAP["title_jp"]
+    title_en_col = P_MAP["title_en"]
     url_col = P_MAP["url"]
     date_col = P_MAP["date"]
     brand_col = P_MAP["brand"]
     segment_col = P_MAP["segment"]
     region_col = P_MAP["region"]
     summary_col = P_MAP["summary"]
-    source_name_col = P_MAP["source_name"]
+    source_col = P_MAP["source"]
 
-    # Populate data
-    if title_col: props[title_col] = {"title": [{"text": {"content": article_data['title'][:100]}}]}
+    # タイトル（JP）: Notionのtitle型プロパティ
+    title_jp = result.get("title_jp") or article_data['title']
+    if title_jp_col:
+        props[title_jp_col] = {"title": [{"text": {"content": title_jp[:100]}}]}
+
+    # タイトル（EN）: rich_text型プロパティ
+    title_en = result.get("title_en") or article_data['title']
+    if title_en_col:
+        props[title_en_col] = {"rich_text": [{"text": {"content": title_en[:100]}}]}
+
     if url_col: props[url_col] = {"url": article_data['link']}
-    if source_name_col: props[source_name_col] = {"select": {"name": "RSS Search Collector"}}
+
+    # 出典（Source）: Geminiが抽出した出典名
+    source_name = result.get("source", "").strip()
+    if source_name and source_col:
+        props[source_col] = {"select": {"name": source_name[:50]}}
     
     # AI Results
     brand_tags = clean_multi_select(result.get("brand"))
@@ -585,10 +603,11 @@ def main():
                     entry_date_str = datetime.now().isoformat()
 
                 data = {
-                    "title": entry.title, 
-                    "link": entry.link, 
+                    "title": entry.title,
+                    "link": entry.link,
                     "summary": entry.get("summary", entry.get("description", "")),
-                    "date": entry_date_str
+                    "date": entry_date_str,
+                    "feed_name": feed['name']
                 }
                 
                 # 1. Early Duplicate Check (Before fetching text or AI analysis)
