@@ -371,15 +371,15 @@ def save_to_notion(result, article_data):
     summary_col = P_MAP["summary"]
     source_col = P_MAP["source"]
 
-    # タイトル（JP）: Notionのtitle型プロパティ
-    title_jp = result.get("title_jp") or article_data['title']
-    if title_jp_col:
-        props[title_jp_col] = {"title": [{"text": {"content": title_jp[:100]}}]}
-
-    # タイトル（EN）: rich_text型プロパティ
+    # タイトル（EN）: Notionのtitle型プロパティ（主キー）
     title_en = result.get("title_en") or article_data['title']
     if title_en_col:
-        props[title_en_col] = {"rich_text": [{"text": {"content": title_en[:100]}}]}
+        props[title_en_col] = {"title": [{"text": {"content": title_en[:100]}}]}
+
+    # タイトル（JP）: rich_text型プロパティ
+    title_jp = result.get("title_jp") or article_data['title']
+    if title_jp_col:
+        props[title_jp_col] = {"rich_text": [{"text": {"content": title_jp[:100]}}]}
 
     if url_col: props[url_col] = {"url": article_data['link']}
 
