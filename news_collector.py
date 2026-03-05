@@ -304,7 +304,45 @@ def is_duplicate(url):
 
 def analyze_article_with_gemini(article_data, page_text=""):
     safe_print(f"  [AI-Full] Analyzing: {article_data['title'][:40]}...")
-    # ... rest of the function (no changes to logic inside)
+
+    content = page_text if len(page_text) > 200 else article_data.get('summary', '')
+    content = content[:5000]
+
+    prompt = f"""あなたは建設・鉱山機械業界の専門ニュースアナリストです。以下の記事を分析し、必ず下記のJSON形式のみで回答してください。余分な説明文は一切不要です。
+
+【記事タイトル】: {article_data['title']}
+【記事本文/概要】:
+{content}
+
+出力するJSONの形式（これ以外の出力はしないでください）:
+{{
+  "bullet_summary": ["要約1（日本語・1文で完結）", "要約2（日本語・1文で完結）", "要約3（日本語・1文で完結）"],
+  "full_body": "記事本文の日本語翻訳（英語の場合は自然な日本語に翻訳、日本語の場合はそのまま掲載）。広告・ナビゲーション・著者情報等は除き、ニュース本文のみ。最大1800文字。",
+  "brand": "関連メーカー名（例: Caterpillar, Komatsu, Liebherr。複数はカンマ区切り。不明はnone）",
+  "segment": "機種セグメント（例: Excavator, Wheel Loader, Crane, Dump Truck。複数はカンマ区切り。不明はnone）",
+  "region": "地域（例: North America, Japan, Europe, China。複数はカンマ区切り。不明はnone）"
+}}"""
+
+    try:
+        response = model.generate_content(prompt)
+        text = response.text.strip()
+        # マークダウンコードブロックを除去
+        text = re.sub(r'^```(?:json)?\s*', '', text)
+        text = re.sub(r'\s*```$', '', text)
+        text = text.strip()
+
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group())
+            safe_print(f"  [AI-Full] Done. Brand: {result.get('brand', 'N/A')}")
+            return result
+        else:
+            safe_print(f"  [WARN] JSON not found in Gemini response.")
+    except json.JSONDecodeError as e:
+        safe_print(f"  [WARN] JSON parse error: {e}")
+    except Exception as e:
+        safe_print(f"  [ERROR] Gemini analysis failed: {e}")
+    return None
 
 def clean_multi_select(val):
     """Clean and format multi-select values, returning empty list if unknown."""
@@ -431,22 +469,81 @@ def save_to_notion(result, article_data):
             return False
     return False
 
+_FETCH_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5,ja;q=0.3',
+}
+
+def resolve_article_url(url):
+    """Google News リダイレクトURLを実際の記事URLに解決する。"""
+    if 'news.google.com' not in url:
+        return url
+    try:
+        resp = requests.get(url, headers=_FETCH_HEADERS, timeout=15, allow_redirects=True)
+        final_url = resp.url
+        if 'news.google.com' not in final_url:
+            safe_print(f"  [URL] Resolved: {final_url[:80]}")
+            return final_url
+        # ページ内のcanonical linkを探す
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(resp.content, 'html.parser')
+        canonical = soup.find('link', rel='canonical')
+        if canonical:
+            href = canonical.get('href', '')
+            if href and 'news.google.com' not in href:
+                safe_print(f"  [URL] Canonical: {href[:80]}")
+                return href
+    except Exception as e:
+        safe_print(f"  [WARN] URL resolution failed: {e}")
+    return url
+
 def get_page_text(url):
     """Fetch and extract clean text from a URL."""
     try:
         from bs4 import BeautifulSoup
-        safe_print(f"  [HTTP] Fetching: {url}")
-        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+        actual_url = resolve_article_url(url)
+        safe_print(f"  [HTTP] Fetching: {actual_url[:80]}")
+        resp = requests.get(actual_url, headers=_FETCH_HEADERS, timeout=15)
         if resp.status_code != 200:
             safe_print(f"  [WARN] Failed to fetch (Status: {resp.status_code})")
             return ""
         soup = BeautifulSoup(resp.content, 'html.parser')
-        
-        for s in soup(["script", "style", "nav", "header", "footer"]):
+
+        # ノイズ要素を除去
+        for s in soup(["script", "style", "nav", "header", "footer", "aside",
+                        "figure", "figcaption", "form", "button", "iframe", "noscript"]):
             s.decompose()
-            
-        text = soup.get_text()
-        clean_text = " ".join(text.split())[:10000]
+
+        # 記事本文コンテナを優先的に探す
+        article_text = ""
+        for selector in ['article', 'main', '[role="main"]',
+                         '.article-body', '.article-content', '.post-content',
+                         '.entry-content', '.story-body', '.article__body']:
+            container = soup.select_one(selector)
+            if container:
+                paragraphs = container.find_all('p')
+                text = ' '.join(
+                    p.get_text(separator=' ', strip=True)
+                    for p in paragraphs if len(p.get_text(strip=True)) > 30
+                )
+                if len(text) > 200:
+                    article_text = text
+                    break
+
+        # フォールバック: ページ全体のpタグ
+        if len(article_text) < 200:
+            all_p = soup.find_all('p')
+            article_text = ' '.join(
+                p.get_text(separator=' ', strip=True)
+                for p in all_p if len(p.get_text(strip=True)) > 30
+            )
+
+        # 最終フォールバック: bodyテキスト全体
+        if len(article_text) < 100:
+            article_text = ' '.join(soup.get_text().split())
+
+        clean_text = article_text[:10000]
         safe_print(f"  [DATA] Extracted text length: {len(clean_text)} chars")
         return clean_text
     except Exception as e:
