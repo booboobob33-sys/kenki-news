@@ -321,8 +321,8 @@ def analyze_article_with_gemini(article_data, page_text=""):
   "title_jp": "日本語タイトル（元が英語なら日本語に翻訳、元が日本語ならそのまま。出典名は含めない）",
   "title_en": "英語タイトル（元が英語ならそのまま、元が日本語なら英語に翻訳。出典名は含めない）",
   "source": "出典名（例: 日経新聞, 日刊工業新聞, Komatsu, Caterpillar, Construction Equipment Guide など簡潔に）",
-  "bullet_summary": ["要約1（日本語・1文で完結）", "要約2（日本語・1文で完結）", "要約3（日本語・1文で完結）"],
-  "full_body": "記事本文の日本語翻訳（英語の場合は自然な日本語に翻訳、日本語の場合はそのまま掲載）。広告・ナビゲーション・著者情報等は除き、ニュース本文のみ。最大1800文字。",
+  "bullet_summary": ["要約ポイント1（日本語・2〜3文で詳しく）", "要約ポイント2（日本語・2〜3文で詳しく）", "要約ポイント3（日本語・2〜3文で詳しく）", "要約ポイント4（任意・重要な補足があれば）", "要約ポイント5（任意・重要な補足があれば）"],
+  "full_body": "記事本文を原文に忠実に転記・翻訳する。英語の場合は自然な日本語に翻訳、日本語の場合はそのまま掲載。ページ内に広告・バナー・画像キャプション・ナビゲーションメニューがあっても一切無視し、その前後にある実際のニュース本文のみを抽出して転記すること。最大3000文字。",
   "brand": "関連メーカー名（例: Caterpillar, Komatsu, Liebherr。複数はカンマ区切り。不明はnone）",
   "segment": "機種セグメント（例: Excavator, Wheel Loader, Crane, Dump Truck。複数はカンマ区切り。不明はnone）",
   "region": "地域（例: North America, Japan, Europe, China。複数はカンマ区切り。不明はnone）"
@@ -419,7 +419,7 @@ def save_to_notion(result, article_data):
             "heading_2": {"rich_text": [{"type": "text", "text": {"content": "【要約】"}}]}
         })
         bullet_list = [b.strip("- •*") for b in bullets.split("\n") if b.strip()]
-        for b in bullet_list[:3]:
+        for b in bullet_list[:5]:
             children.append({
                 "object": "block",
                 "type": "bulleted_list_item",
@@ -439,20 +439,18 @@ def save_to_notion(result, article_data):
         })
         
         # Notion paragraph blocks have a 2000 character limit.
-        # We enforce a strict limit and add a link if truncated.
-        display_body = body_text
-        is_truncated = False
-        
-        if len(display_body) > 2000:
-            display_body = display_body[:1950] + "..."
-            is_truncated = True
-            
-        children.append({
-            "object": "block",
-            "type": "paragraph",
-            "paragraph": {"rich_text": [{"type": "text", "text": {"content": display_body}}]}
-        })
-        
+        # Split body_text into multiple blocks of up to 1950 chars each.
+        CHUNK = 1950
+        chunks = [body_text[i:i+CHUNK] for i in range(0, min(len(body_text), 6000), CHUNK)]
+        for chunk in chunks:
+            children.append({
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": chunk}}]}
+            })
+
+        is_truncated = len(body_text) > 6000
+
         # Always provide the original link for convenience or if truncated
         children.append({
             "object": "block",
