@@ -32,5 +32,6 @@ The system is configured to run daily at 5:00 AM JST. To enable this:
 1. Push this repository to GitHub.
 2. Go to **Settings > Secrets and variables > Actions**.
 3. Add the secrets listed in the section above.
-*
+
+
 
