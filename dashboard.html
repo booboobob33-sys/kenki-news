@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
@@ -420,6 +420,19 @@ function drawChart(canvasId, data, color, yLabel) {
         x: {
           display: true,
           grid: { display: false },
+          afterBuildTicks(scale) {
+            const labels = scale.chart.data.labels;
+            if (!labels) return;
+            const existing = new Set(scale.ticks.map(t => t.value));
+            labels.forEach((label, i) => {
+              const day = (label || '').slice(8, 10);
+              if (day && day !== '01' && !existing.has(i)) {
+                scale.ticks.push({ value: i });
+                existing.add(i);
+              }
+            });
+            scale.ticks.sort((a, b) => a.value - b.value);
+          },
           ticks: {
             color: '#4a5068',
             font: { family: 'DM Mono', size: 9 },
@@ -429,9 +442,11 @@ function drawChart(canvasId, data, color, yLabel) {
               const label = this.getLabelForValue(val);
               if (!label || label.length < 7) return label;
               const day = label.slice(8, 10);
-              // 日が "01" でない = 週次実日付 → "MM/DD" 形式
-              if (day && day !== '01') return label.slice(5,7) + '/' + label.slice(8,10);
-              // 月次データ → "YY/MM" 形式
+              if (day && day !== '01') {
+                const month = parseInt(label.slice(5, 7));
+                const weekNum = Math.ceil(parseInt(day) / 7);
+                return month + '/' + weekNum + 'W';
+              }
               return label.slice(2,4) + '/' + label.slice(5,7);
             }
           },
