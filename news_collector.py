@@ -321,8 +321,8 @@ def analyze_article_with_gemini(article_data, page_text=""):
   "title_jp": "日本語タイトル（元が英語なら日本語に翻訳、元が日本語ならそのまま。出典名は含めない）",
   "title_en": "英語タイトル（元が英語ならそのまま、元が日本語なら英語に翻訳。出典名は含めない）",
   "source": "出典名（例: 日経新聞, 日刊工業新聞, Komatsu, Caterpillar, Construction Equipment Guide など簡潔に）",
-  "bullet_summary": ["要約ポイント1（日本語・2〜3文で詳しく）", "要約ポイント2（日本語・2〜3文で詳しく）", "要約ポイント3（日本語・2〜3文で詳しく）", "要約ポイント4（任意・重要な補足があれば）", "要約ポイント5（任意・重要な補足があれば）"],
-  "full_body": "記事本文を原文に忠実に転記・翻訳する。英語の場合は自然な日本語に翻訳、日本語の場合はそのまま掲載。ページ内に広告・バナー・画像キャプション・ナビゲーションメニューがあっても一切無視し、その前後にある実際のニュース本文のみを抽出して転記すること。最大3000文字。",
+  "bullet_summary": "記事全体の内容を1つの段落にまとめた日本語要約。読了2〜3分相当（400〜600文字程度）の詳しい内容にすること。複数の箇条書きにせず、連続した文章で記述する。",
+  "full_body": "原文の逐語訳。要約・省略・言い換えは一切禁止。英語の場合は直訳に近い自然な日本語に翻訳し、日本語の場合は原文をそのまま全文転記する。広告・バナー・画像キャプション・ナビゲーションメニューは除外し、ニュース本文のみを先頭から順番に転記すること。最大3000文字。",
   "brand": "関連メーカー名（例: Caterpillar, Komatsu, Liebherr。複数はカンマ区切り。不明はnone）",
   "segment": "機種セグメント（例: Excavator, Wheel Loader, Crane, Dump Truck。複数はカンマ区切り。不明はnone）",
   "region": "地域（例: North America, Japan, Europe, China。複数はカンマ区切り。不明はnone）"
@@ -408,22 +408,22 @@ def save_to_notion(result, article_data):
     children = []
     
     # Summary Section
-    bullets = result.get("bullet_summary", "")
-    if isinstance(bullets, list):
-        bullets = "\n".join(bullets)
-    bullets = str(bullets).strip()
-    if bullets:
+    summary_text = result.get("bullet_summary", "")
+    if isinstance(summary_text, list):
+        summary_text = " ".join(summary_text)
+    summary_text = str(summary_text).strip()
+    if summary_text:
         children.append({
             "object": "block",
             "type": "heading_2",
             "heading_2": {"rich_text": [{"type": "text", "text": {"content": "【要約】"}}]}
         })
-        bullet_list = [b.strip("- •*") for b in bullets.split("\n") if b.strip()]
-        for b in bullet_list[:5]:
+        # 2000字制限に合わせて分割
+        for i in range(0, min(len(summary_text), 4000), 1950):
             children.append({
                 "object": "block",
-                "type": "bulleted_list_item",
-                "bulleted_list_item": {"rich_text": [{"type": "text", "text": {"content": b[:2000]}}]}
+                "type": "paragraph",
+                "paragraph": {"rich_text": [{"type": "text", "text": {"content": summary_text[i:i+1950]}}]}
             })
 
     # Body Section
