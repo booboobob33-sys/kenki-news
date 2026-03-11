@@ -321,8 +321,8 @@ def analyze_article_with_gemini(article_data, page_text=""):
   "title_jp": "日本語タイトル（元が英語なら日本語に翻訳、元が日本語ならそのまま。出典名は含めない）",
   "title_en": "英語タイトル（元が英語ならそのまま、元が日本語なら英語に翻訳。出典名は含めない）",
   "source": "出典名（例: 日経新聞, 日刊工業新聞, Komatsu, Caterpillar, Construction Equipment Guide など簡潔に）",
-  "bullet_summary": "記事全体の内容を1つの段落にまとめた日本語要約。読了2〜3分相当（400〜600文字程度）の詳しい内容にすること。複数の箇条書きにせず、連続した文章で記述する。",
-  "full_body": "原文の逐語訳。要約・省略・言い換えは一切禁止。英語の場合は直訳に近い自然な日本語に翻訳し、日本語の場合は原文をそのまま全文転記する。広告・バナー・画像キャプション・ナビゲーションメニューは除外し、ニュース本文のみを先頭から順番に転記すること。最大3000文字。",
+  "bullet_summary": "日本語3文のみ。必ず3文で終わること。4文以上は絶対に書かない。各文は記事の核心を簡潔にまとめること。",
+  "full_body": "原文の逐語訳。要約・省略・言い換えは一切禁止。英語の場合は直訳に近い自然な日本語に翻訳し、日本語の場合は原文をそのまま全文転記する。広告・バナー・画像キャプション・ナビゲーションメニューは除外し、ニュース本文のみを先頭から順番に転記すること。最大3000文字。入手できたテキストのみ転記し、推測や補完は禁止。",
   "brand": "関連メーカー名（例: Caterpillar, Komatsu, Liebherr。複数はカンマ区切り。不明はnone）",
   "segment": "機種セグメント（例: Excavator, Wheel Loader, Crane, Dump Truck。複数はカンマ区切り。不明はnone）",
   "region": "地域（例: North America, Japan, Europe, China。複数はカンマ区切り。不明はnone）"
@@ -499,17 +499,42 @@ def resolve_article_url(url):
         resp = requests.get(url, headers=_FETCH_HEADERS, timeout=15, allow_redirects=True)
         final_url = resp.url
         if 'news.google.com' not in final_url:
-            safe_print(f"  [URL] Resolved: {final_url[:80]}")
+            safe_print(f"  [URL] Resolved via redirect: {final_url[:80]}")
             return final_url
-        # ページ内のcanonical linkを探す
+
+        # Google Newsページ内から実際の記事URLを多段階で探す
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(resp.content, 'html.parser')
-        canonical = soup.find('link', rel='canonical')
-        if canonical:
-            href = canonical.get('href', '')
-            if href and 'news.google.com' not in href:
-                safe_print(f"  [URL] Canonical: {href[:80]}")
+
+        def is_real_url(href):
+            return href and href.startswith('http') and 'google' not in href
+
+        # 1. canonical link
+        tag = soup.find('link', rel='canonical')
+        if tag and is_real_url(tag.get('href', '')):
+            safe_print(f"  [URL] canonical: {tag['href'][:80]}")
+            return tag['href']
+
+        # 2. og:url
+        tag = soup.find('meta', property='og:url')
+        if tag and is_real_url(tag.get('content', '')):
+            safe_print(f"  [URL] og:url: {tag['content'][:80]}")
+            return tag['content']
+
+        # 3. twitter:url
+        tag = soup.find('meta', attrs={'name': 'twitter:url'})
+        if tag and is_real_url(tag.get('content', '')):
+            safe_print(f"  [URL] twitter:url: {tag['content'][:80]}")
+            return tag['content']
+
+        # 4. ページ内の最初の外部リンク（Google以外）
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if is_real_url(href):
+                safe_print(f"  [URL] page link: {href[:80]}")
                 return href
+
+        safe_print(f"  [WARN] URL resolution exhausted. Using original Google URL.")
     except Exception as e:
         safe_print(f"  [WARN] URL resolution failed: {e}")
     return url
