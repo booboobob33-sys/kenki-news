@@ -107,6 +107,28 @@ export default async function ArticlePage({ params }: { params: { id: string } }
           blocks.map((block, i) => <BlockRenderer key={i} block={block} />)
         )}
       </div>
+
+      {/* 著作権表示 */}
+      <div className="mt-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-xs text-yellow-800 space-y-1">
+        <p>
+          <span className="font-bold">⚠️ 著作権表示：</span>
+          本ページは著作権法第32条に基づく引用および社内情報収集・研究目的で転記・翻訳しています。
+          著作権は原著作者に帰属します。商用利用・外部公開を禁じます。
+        </p>
+        {article.sourceUrl && (
+          <p>
+            原文：
+            <a
+              href={article.sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline break-all"
+            >
+              {article.sourceUrl}
+            </a>
+          </p>
+        )}
+      </div>
     </div>
   );
 }

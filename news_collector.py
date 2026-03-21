@@ -321,8 +321,8 @@ def analyze_article_with_gemini(article_data, page_text=""):
   "title_jp": "日本語タイトル（元が英語なら日本語に翻訳、元が日本語ならそのまま。出典名は含めない）",
   "title_en": "英語タイトル（元が英語ならそのまま、元が日本語なら英語に翻訳。出典名は含めない）",
   "source": "出典名（例: 日経新聞, 日刊工業新聞, Komatsu, Caterpillar, Construction Equipment Guide など簡潔に）",
-  "bullet_summary": "日本語3文のみ。必ず3文で終わること。4文以上は絶対に書かない。各文は記事の核心を簡潔にまとめること。",
-  "full_body": "原文の逐語訳。要約・省略・言い換えは一切禁止。英語の場合は直訳に近い自然な日本語に翻訳し、日本語の場合は原文をそのまま全文転記する。広告・バナー・画像キャプション・ナビゲーションメニューは除外し、ニュース本文のみを先頭から順番に転記すること。最大3000文字。入手できたテキストのみ転記し、推測や補完は禁止。",
+  "bullet_summary": "日本語3文のみ。必ず3文で終わること。4文以上は絶対に書かない。記事本文に書かれた事実のみを簡潔にまとめること。推測・解釈・意見・評価・将来予測は一切含めない。",
+  "full_body": "原文の逐語訳。要約・省略・言い換えは一切禁止。英語の場合は直訳に近い自然な日本語に翻訳し、日本語の場合は原文をそのまま全文転記する。広告・バナー・画像キャプション・ナビゲーションメニューは除外し、ニュース本文のみを先頭から順番に転記すること。本文が広告などで途切れている場合は、前後の段落を文脈に沿って繋げること（ただし記載テキストの範囲内に限る、補完・推測は禁止）。最大5000文字。入手できたテキストのみ転記し、推測や補完は禁止。",
   "brand": "関連メーカー名（例: Caterpillar, Komatsu, Liebherr。複数はカンマ区切り。不明はnone）",
   "segment": "機種セグメント（例: Excavator, Wheel Loader, Crane, Dump Truck。複数はカンマ区切り。不明はnone）",
   "region": "地域（例: North America, Japan, Europe, China。複数はカンマ区切り。不明はnone）"
@@ -406,7 +406,24 @@ def save_to_notion(result, article_data):
 
     # Construct Page Body (Children)
     children = []
-    
+
+    # 著作権免責ブロック（ページ先頭）
+    source_url = article_data.get('link', '')
+    copyright_text = (
+        "【著作権表示】本ページは著作権法第32条に基づく引用および社内情報収集・研究目的で"
+        "転記・翻訳しています。著作権は原著作者に帰属します。商用利用・外部公開を禁じます。"
+        f"  原文URL: {source_url}"
+    )
+    children.append({
+        "object": "block",
+        "type": "callout",
+        "callout": {
+            "rich_text": [{"type": "text", "text": {"content": copyright_text}}],
+            "icon": {"emoji": "⚠️"},
+            "color": "yellow_background"
+        }
+    })
+
     # Summary Section
     summary_text = result.get("bullet_summary", "")
     if isinstance(summary_text, list):
@@ -441,7 +458,7 @@ def save_to_notion(result, article_data):
         # Notion paragraph blocks have a 2000 character limit.
         # Split body_text into multiple blocks of up to 1950 chars each.
         CHUNK = 1950
-        chunks = [body_text[i:i+CHUNK] for i in range(0, min(len(body_text), 6000), CHUNK)]
+        chunks = [body_text[i:i+CHUNK] for i in range(0, min(len(body_text), 8000), CHUNK)]
         for chunk in chunks:
             children.append({
                 "object": "block",
@@ -449,7 +466,7 @@ def save_to_notion(result, article_data):
                 "paragraph": {"rich_text": [{"type": "text", "text": {"content": chunk}}]}
             })
 
-        is_truncated = len(body_text) > 6000
+        is_truncated = len(body_text) > 8000
 
         # Always provide the original link for convenience or if truncated
         children.append({
@@ -551,10 +568,23 @@ def get_page_text(url):
             return ""
         soup = BeautifulSoup(resp.content, 'html.parser')
 
-        # ノイズ要素を除去
+        # ノイズ要素（タグ種別）を除去
         for s in soup(["script", "style", "nav", "header", "footer", "aside",
                         "figure", "figcaption", "form", "button", "iframe", "noscript"]):
             s.decompose()
+
+        # 広告・ノイズ要素（クラス名/ID のパターンマッチング）を除去
+        ad_pattern = re.compile(
+            r'(^ad$|^ads$|advert|advertisement|banner|popup|modal|cookie|gdpr|'
+            r'promo|sponsor|social[\-_]?share|share[\-_]?bar|related[\-_]?(posts|articles)|'
+            r'recommend|newsletter|subscribe|comment|sidebar|widget|sticky|overlay)',
+            re.IGNORECASE
+        )
+        for tag in soup.find_all(True):
+            tag_id    = tag.get('id', '') or ''
+            tag_class = ' '.join(tag.get('class', []) or [])
+            if ad_pattern.search(tag_id) or ad_pattern.search(tag_class):
+                tag.decompose()
 
         # 記事本文コンテナを優先的に探す
         article_text = ""
