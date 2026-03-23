@@ -1491,6 +1491,7 @@ def collect_and_write(spreadsheet):
     rows = fetch_commodity_price("ニッケル価格", "PNICK", None, None, "PNICKUSDM")
     # 週次補完（直近3ヶ月）
     weekly = fetch_weekly_recent("ni.f", "NI=F", "ニッケル価格", months_back=3)
+    raw_weekly["ニッケル価格"] = weekly or {}
     if weekly:
         rows = merge_weekly_into_monthly(rows, weekly, "ニッケル価格")
     write_bulk(sheet, rows)
