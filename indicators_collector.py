@@ -1486,14 +1486,9 @@ def collect_and_write(spreadsheet):
     time.sleep(2)
 
     # ── 8. ニッケル価格（USD/mt）─────────────────────────────────────────
-    # IMF: PNICK / Stooq: ni.f（LME先物）/ yfinance: NI=F / FRED: PNICKUSDM
+    # IMF: PNICK / FRED: PNICKUSDM（月次のみ・無料APIで日次取得不可）
     sheet = get_or_create_sheet(spreadsheet, "ニッケル価格", ["日付", "ニッケル価格 (USD/mt)"])
     rows = fetch_commodity_price("ニッケル価格", "PNICK", None, None, "PNICKUSDM")
-    # 週次補完（直近3ヶ月）
-    weekly = fetch_weekly_recent("ni.f", "NI=F", "ニッケル価格", months_back=3)
-    raw_weekly["ニッケル価格"] = weekly or {}
-    if weekly:
-        rows = merge_weekly_into_monthly(rows, weekly, "ニッケル価格")
     write_bulk(sheet, rows)
     all_data["ニッケル価格"] = rows
     time.sleep(2)
