@@ -61,10 +61,10 @@ def check_env():
 # =============================================================================
 def connect_sheets():
     """サービスアカウントでGoogle Sheetsに接続する。"""
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
+    # 最小権限: 本スクリプトは open_by_key / values / batchUpdate しか使わず、
+    # いずれも Sheets API v4 で完結する。Drive スコープ（ドライブ全体への
+    # アクセス）は不要なため付与しない。
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds_dict = json.loads(GOOGLE_SHEETS_CREDENTIALS)
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
