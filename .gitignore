@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+env/
+.vscode/
+.idea/
+*.log
+
+# Exclude all utility and test scripts from GitHub upload
+check_*.py
+test_*.py
+list_models.py
+decode_test.py
+test_query.py

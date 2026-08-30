@@ -1,8 +1,5 @@
 requests
 feedparser
-google-generativeai
+groq
 notion-client
 beautifulsoup4
-selenium
-webdriver-manager
-yfinance
