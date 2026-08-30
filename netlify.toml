@@ -2,3 +2,19 @@
   from = "/"
   to = "/dashboard.html"
   status = 200
+
+# ── セキュリティヘッダー ──────────────────────────────
+# CSP は dashboard.html が実際に読み込む先だけを許可する:
+#   script  : 自サイト + cdnjs (Chart.js、SRI付き)
+#   style   : 自サイト + Google Fonts + インライン<style>
+#   font    : Google Fonts の配信元
+#   connect : 自サイトのみ (data.json の fetch)
+# 外部への通信・埋め込みは既定で拒否される。
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"
+    Permissions-Policy = "geolocation=(), microphone=(), camera=(), interest-cohort=()"
